@@ -236,7 +236,12 @@ def achar_claude_code() -> str | None:
     if achado:
         return achado
     local = Path.home() / ".local" / "bin" / "claude.exe"
-    return str(local) if local.exists() else None
+    if local.exists():
+        return str(local)
+    # cópia que vem junto com o app Claude para desktop (a pasta muda a cada atualização)
+    dados = Path(os.environ.get("LOCALAPPDATA", "")) / "Claude-Data"
+    copias = sorted(dados.glob("*/claude-code/*/*/claude.exe"), key=lambda p: p.stat().st_mtime)
+    return str(copias[-1]) if copias else None
 
 
 def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:

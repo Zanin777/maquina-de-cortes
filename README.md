@@ -17,6 +17,9 @@ entrega cortes prontos para TikTok/Reels/Shorts.
   claude
   ```
   (conta nos limites de uso da sua assinatura)
+
+  Se você já tem o app Claude para desktop, ele traz uma cópia do Claude Code que o programa
+  também encontra — mas ela precisa de um login próprio: rode o `claude.exe` dela uma vez e digite `/login`.
 - **Chave de API:** crie em https://console.anthropic.com (cobrança separada, por uso) e cole na janela.
   Fica salva em `config.json`, que não vai pro GitHub.
 
