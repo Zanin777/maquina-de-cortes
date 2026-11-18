@@ -39,8 +39,8 @@ MODELO_CLAUDE = "claude-opus-5-5"
 @dataclass
 class Opcoes:
     qtd_cortes: int = 5
-    dur_min: int = 30
-    dur_max: int = 75
+    dur_min: int = 25
+    dur_max: int = 59  # até 59 s: Short com mais de 1 min e reivindicação de direitos é bloqueado
     modelo_whisper: str = "small"
     idioma: str = "pt"
     vertical: bool = True
@@ -267,10 +267,19 @@ FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", '
 
 def perguntar_ia(sistema: str, conteudo: str, op: Opcoes, log: Log, schema: dict, formato: str,
                  tarefa: str) -> dict:
-    """Pergunta à IA e devolve JSON: pela API (se houver chave) ou pelo Claude Code (assinatura)."""
-    if op.api_key.strip() or os.environ.get("ANTHROPIC_API_KEY"):
-        return _ia_pela_api(sistema, conteudo, op, log, schema, tarefa)
-    return _ia_pelo_claude_code(sistema, conteudo, log, formato, tarefa)
+    """Pergunta à IA e devolve JSON: pela API (se houver chave) ou pelo Claude Code (assinatura).
+    Se falhar (limite de uso, internet, resposta quebrada), espera e tenta de novo até 4 vezes."""
+    esperas = [30, 120, 300]
+    for tentativa in range(len(esperas) + 1):
+        try:
+            if op.api_key.strip() or os.environ.get("ANTHROPIC_API_KEY"):
+                return _ia_pela_api(sistema, conteudo, op, log, schema, tarefa)
+            return _ia_pelo_claude_code(sistema, conteudo, log, formato, tarefa)
+        except Exception as e:
+            if tentativa == len(esperas):
+                raise
+            log(f"  ⚠ A IA falhou ({str(e).splitlines()[0][:160]}). Tentando de novo em {esperas[tentativa]} s...")
+            time.sleep(esperas[tentativa])
 
 
 def _ia_pela_api(sistema: str, conteudo: str, op: Opcoes, log: Log, schema: dict | None = None,
@@ -330,9 +339,15 @@ def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log, formato: str = F
         input=conteudo, capture_output=True, text=True, encoding="utf-8", timeout=900, env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    if r.returncode != 0:
-        raise RuntimeError(f"O Claude Code falhou (está logado? rode 'claude' uma vez):\n{(r.stderr or r.stdout)[-800:]}")
-    resposta = json.loads(r.stdout).get("result", "")
+    try:
+        saida = json.loads(r.stdout)
+    except Exception:
+        saida = {}
+    if r.returncode != 0 or saida.get("is_error"):
+        motivo = saida.get("result") or (r.stderr or r.stdout)[-400:]
+        status = saida.get("api_error_status")
+        raise RuntimeError(f"Claude Code: {motivo}" + (f" (erro {status})" if status else ""))
+    resposta = saida.get("result", "")
     achado = re.search(r"\{.*\}", resposta, re.S)
     if not achado:
         raise RuntimeError(f"Resposta inesperada do Claude Code:\n{resposta[:500]}")
@@ -368,7 +383,8 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
         "sem 'rabo' depois do ponto alto.\n"
         "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
         "rendem mais que conversa morna ou leitura de chat.\n"
-        "- Prefira cortes mais curtos e densos a cortes longos com partes paradas.\n"
+        "- Prefira cortes mais curtos e densos a cortes longos com partes paradas; o ideal costuma ser "
+        "entre 25 e 45 segundos.\n"
         "- Título: até ~60 caracteres, curioso e fiel ao que acontece (sem mentir), em linguagem de internet; "
         "pode usar 1 emoji. Não comece com o nome do jogo.\n"
         "- 'nota' é sua aposta honesta de desempenho (1-10); reserve 9-10 para momentos realmente fortes."
@@ -400,6 +416,11 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
         dentro = [w for w in palavras if w.inicio >= ini - 0.5 and w.fim <= fim + 1.5]
         if not dentro:
             continue
+        # nunca passa da duração máxima: termina na última palavra que cabe
+        limite = dentro[0].inicio + op.dur_max - 0.6
+        if dentro[-1].fim > limite:
+            dentro = [w for w in dentro if w.fim <= limite] or dentro[:1]
+            log(f"  (corte '{c['titulo'][:40]}' passou de {op.dur_max}s; encurtado)")
         ini = max(0.0, dentro[0].inicio - 0.15)
         fim = dentro[-1].fim + 0.35
         # evita sobreposição com cortes já aceitos
@@ -791,6 +812,10 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
                     log(f"  ✅ No YouTube: {r['youtube']}")
                 except Exception as e:
                     log(f"  ⚠ Não consegui publicar no YouTube: {e}")
+                    if publicador.eh_limite(e):
+                        quando = publicador.por_na_fila(pasta, op.yt_modo, op.yt_intervalo_min, op.yt_nota_min)
+                        log(f"  Limite diário do YouTube: os cortes desta pasta vão para a fila "
+                            f"(nova tentativa a partir de {quando:%d/%m %H:%M}).")
             else:
                 log(f"  (nota {c.nota} abaixo da mínima {op.yt_nota_min}: não publicado)")
         alterar_cortes_json(pasta, lambda dados: dados.append(r))
@@ -984,6 +1009,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
     rodada = 1
     gravador = _iniciar_gravacao(url, pasta_blocos, rodada, op, log, entrada_teste)
     feitos: set[str] = set()
+    falhos: list[tuple[int, Path]] = []
     total = 0
     n_bloco = 0
 
@@ -1020,6 +1046,8 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
                 bloco.unlink(missing_ok=True)  # bloco já cortado: libera espaço (~3 GB por hora de live)
             except Exception as e:
                 log(f"  Erro no bloco {n_bloco}: {e}")
+                log("  O bloco foi guardado e vai ser cortado de novo no final da live.")
+                falhos.append((n_bloco, bloco))
             log(f"— Bloco {n_bloco} pronto. Total até agora: {total} cortes em {pasta}")
 
         if not gravando:
@@ -1043,5 +1071,12 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
 
         parar.wait(5)
 
+    for n, bloco in falhos:  # segunda chance para os blocos que deram erro
+        log(f"— Tentando de novo o bloco {n}...")
+        try:
+            total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n:02d}-", fonte=url)
+            bloco.unlink(missing_ok=True)
+        except Exception as e:
+            log(f"  O bloco {n} falhou de novo ({e}). O vídeo dele ficou guardado em: {bloco}")
     log(f"Pronto! {total} cortes da live salvos em: {pasta}")
     return pasta

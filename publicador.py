@@ -21,6 +21,67 @@ ARQ_CLIENTE = motor.PASTA_APP / "youtube_cliente.json"   # credencial do app (ba
 ARQ_TOKEN = motor.PASTA_APP / "youtube_token.json"       # autorização da conta (criada no login)
 ARQ_AGENDA = motor.PASTA_APP / "youtube_agenda.json"     # último horário agendado
 ARQ_PUBLICADOS = motor.PASTA_APP / "youtube_publicados.json"  # tudo que já foi pro YouTube (fonte da verdade)
+ARQ_FILA = motor.PASTA_APP / "youtube_fila.json"         # pastas esperando o limite diário do YouTube liberar
+ESPERA_LIMITE_H = 3                                      # de quanto em quanto tempo tenta de novo
+
+
+def eh_limite(erro) -> bool:
+    t = str(erro)
+    return "uploadLimitExceeded" in t or "exceeded the number of videos" in t or "quota" in t.lower()
+
+
+def ler_fila() -> dict:
+    try:
+        return json.loads(ARQ_FILA.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _gravar_fila(fila: dict) -> None:
+    if fila.get("pastas"):
+        ARQ_FILA.write_text(json.dumps(fila, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        ARQ_FILA.unlink(missing_ok=True)
+
+
+def por_na_fila(pasta: Path, modo: str, intervalo_min: float, nota_min: int) -> datetime:
+    """Guarda a pasta para tentar de novo quando o limite diário do YouTube liberar."""
+    fila = ler_fila()
+    pastas = fila.get("pastas", [])
+    if str(pasta) not in pastas:
+        pastas.append(str(pasta))
+    quando = datetime.now() + timedelta(hours=ESPERA_LIMITE_H)
+    fila.update({"pastas": pastas, "modo": modo, "intervalo_min": intervalo_min,
+                 "nota_min": nota_min, "tentar_apos": quando.isoformat(timespec="seconds")})
+    _gravar_fila(fila)
+    return quando
+
+
+def tirar_da_fila(pasta: Path) -> None:
+    fila = ler_fila()
+    if str(pasta) in fila.get("pastas", []):
+        fila["pastas"].remove(str(pasta))
+        _gravar_fila(fila)
+
+
+def retomar_fila(log: Log, completar=None) -> bool:
+    """Se houver pastas esperando e já deu a hora, tenta publicar de novo. Devolve True se tentou."""
+    fila = ler_fila()
+    if not fila.get("pastas"):
+        return False
+    if datetime.now() < datetime.fromisoformat(fila["tentar_apos"]):
+        return False
+    log("-" * 60)
+    log("Retomando a fila do YouTube (o limite diário pode ter liberado)...")
+    for pasta in list(fila["pastas"]):
+        p = Path(pasta)
+        if not p.exists():
+            tirar_da_fila(p)
+            continue
+        if completar:
+            completar(p)
+        publicar_pasta(p, fila.get("modo", "agendado"), fila.get("intervalo_min", 20), fila.get("nota_min", 1), log)
+    return True
 CATEGORIA_JOGOS = "20"
 
 
@@ -266,9 +327,12 @@ def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, 
                             tags=r.get("tags"), fonte=r.get("fonte", "") or _fonte_da_pasta(p))
         except Exception as e:
             log(f"  ⚠ Erro: {e}")
-            if "quota" in str(e).lower() or "uploadLimitExceeded" in str(e):
-                log("  Limite diário do YouTube atingido — o resto fica para amanhã (é só clicar de novo).")
-                break
+            if eh_limite(e):
+                for q in pastas_de_cortes(pasta):
+                    quando = por_na_fila(q, modo, intervalo_min, nota_min)
+                log(f"  Limite diário do YouTube atingido. O resto ficou na fila e o programa tenta de novo "
+                    f"sozinho a partir de {quando:%d/%m %H:%M} (deixe o programa aberto).")
+                return feitos
             continue
         registrar(p / arquivo, r["titulo"], link)
 
@@ -279,5 +343,7 @@ def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, 
         motor.alterar_cortes_json(p, marcar)
         log(f"  ✅ {link}")
         feitos += 1
+    for q in pastas_de_cortes(pasta):
+        tirar_da_fila(q)
     log(f"Pronto: {feitos} cortes enviados ao YouTube.")
     return feitos

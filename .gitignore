@@ -25,3 +25,4 @@ dist/
 youtube_publicados.json
 .cortes.lock
 *.json.tmp
+youtube_fila.json

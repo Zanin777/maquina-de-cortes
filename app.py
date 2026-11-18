@@ -57,8 +57,8 @@ class App(tk.Tk):
         nums = ttk.Frame(frm)
         nums.grid(row=3, column=0, columnspan=3, sticky="w", **pad)
         self.qtd = tk.IntVar(value=cfg.get("qtd_cortes", 5))
-        self.dmin = tk.IntVar(value=cfg.get("dur_min", 30))
-        self.dmax = tk.IntVar(value=cfg.get("dur_max", 75))
+        self.dmin = tk.IntVar(value=cfg.get("dur_min", 25))
+        self.dmax = tk.IntVar(value=cfg.get("dur_max", 59))
         self.whisper = tk.StringVar(value=cfg.get("modelo_whisper", "small"))
         ttk.Label(nums, text="Cortes:").pack(side="left")
         ttk.Spinbox(nums, from_=1, to=30, width=4, textvariable=self.qtd).pack(side="left", padx=(4, 14))
@@ -148,6 +148,8 @@ class App(tk.Tk):
         frm.rowconfigure(10, weight=1)
 
         self.after(100, self.ler_fila)
+        self.publicando = False
+        self.after(5000, self.conferir_fila_youtube)
         self.log("Cole um link (YouTube, Twitch...) ou escolha um vídeo do PC e clique em Fazer cortes.")
 
     # ------------------------------------------------------------------
@@ -176,6 +178,7 @@ class App(tk.Tk):
                 self.yt_txt.set(valor)
             elif tipo == "fim_yt":
                 self.barra.stop()
+                self.publicando = False
             elif tipo == "fim":
                 self.barra.stop()
                 self.bt_ir.config(state="normal")
@@ -200,6 +203,28 @@ class App(tk.Tk):
         )
 
     # ---------------- YouTube ----------------
+    def conferir_fila_youtube(self):
+        """Ao abrir e a cada 15 min: se há cortes esperando o limite do YouTube liberar, tenta de novo."""
+        self.after(15 * 60 * 1000, self.conferir_fila_youtube)
+        fila = publicador.ler_fila()
+        if self.publicando or not fila.get("pastas") or not publicador.conectado():
+            return
+        from datetime import datetime
+        if datetime.now() < datetime.fromisoformat(fila["tentar_apos"]):
+            return
+        self.publicando = True
+        op = self.opcoes()
+
+        def trabalho():
+            log = lambda m: self.fila.put(("log", m))
+            try:
+                publicador.retomar_fila(log, completar=lambda p: motor.completar_legendas(p, op, log))
+            except Exception as e:
+                log(f"Erro ao retomar a fila do YouTube: {e}")
+            self.fila.put(("fim_yt", None))
+
+        threading.Thread(target=trabalho, daemon=True).start()
+
     def aprender_canal(self):
         if not publicador.conectado():
             messagebox.showwarning("YouTube", "Conecte sua conta do YouTube primeiro (botão 'Conectar YouTube...').")
