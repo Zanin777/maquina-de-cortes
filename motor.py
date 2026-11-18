@@ -550,13 +550,32 @@ def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float) -> list[str]
                 f"m 0 0 l {largura} 0 l {largura} {h} l 0 {h}{{\\p0}}")
 
     texto = "\\N".join(_ass_esc(l) for l in linhas_tit)
+    clip = f"\\clip(0,{y0},{largura},{y0 + alt})"
+    # listras diagonais sutis (textura) por toda a faixa
+    listras = " ".join(f"m {x} 0 l {x + 26} 0 l {x + 26 - alt} {alt} l {x - alt} {alt}"
+                       for x in range(0, largura + alt, 64))
+    # brilho que atravessa a faixa logo que ela aparece
+    brilho = f"m 0 0 l 90 0 l {90 - alt} {alt} l {-alt} {alt}"
+    # cantos amarelos (triângulos) nas pontas de baixo
+    canto = 34
     return [
         ret(y0 + alt, 10, "00006E", 2),            # sombra vinho embaixo
         ret(y0, alt, "1C1CD9", 3),                 # faixa vermelha
+        ret(y0 + alt // 2, alt - alt // 2, "1212B4", 3, "\\1a&H70&"),  # metade de baixo mais escura (degradê)
+        f"Dialogue: 3,{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        f"{{\\an7\\pos(0,{y0})\\1c&H0E0EA0&\\1a&HB4&\\fad(150,0){clip}\\p1}}{listras}{{\\p0}}",
         ret(y0, 8, "00D2FF", 4),                   # detalhe amarelo em cima
+        ret(y0 + 8, 3, "FFFFFF", 4, "\\1a&H60&"),  # filete branco embaixo do amarelo
         ret(y0 + alt - 4, 4, "0E0E9A", 4),         # filete escuro na base
+        f"Dialogue: 4,{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        f"{{\\an7\\pos(0,{y0 + alt - canto})\\1c&H00D2FF&\\fad(150,0)\\p1}}m 0 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
+        f"Dialogue: 4,{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        f"{{\\an7\\pos({largura - canto},{y0 + alt - canto})\\1c&H00D2FF&\\fad(150,0)\\p1}}"
+        f"m {canto} 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
+        f"Dialogue: 4,{_ass_tempo(0)},{_ass_tempo(min(dur, 1.2))},Desenho,,0,0,0,,"
+        f"{{\\an7\\move({-120},{y0},{largura + alt},{y0},250,900)\\1c&HFFFFFF&\\1a&H90&{clip}\\p1}}{brilho}{{\\p0}}",
         f"Dialogue: 5,{_ass_tempo(0)},{fim},TitV,,0,0,0,,"
-        f"{{\\an5\\pos({largura // 2},{y0 + alt // 2 + 3})\\fad(150,0)"
+        f"{{\\an5\\pos({largura // 2},{y0 + alt // 2 + 3})\\fad(150,0)\\3c&H00006E&\\4c&H00005A&\\shad5"
         f"\\fscx80\\fscy80\\t(0,220,\\fscx100\\fscy100)}}{texto}",
     ]
 
