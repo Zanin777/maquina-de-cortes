@@ -16,7 +16,8 @@ import motor
 Log = Callable[[str], None]
 
 ESCOPOS = ["https://www.googleapis.com/auth/youtube.upload",
-           "https://www.googleapis.com/auth/youtube.readonly"]
+           "https://www.googleapis.com/auth/youtube.readonly",
+           "https://www.googleapis.com/auth/youtube"]  # gerenciar: necessário para excluir/editar os próprios Shorts
 ARQ_CLIENTE = motor.PASTA_APP / "youtube_cliente.json"   # credencial do app (baixada do Google Cloud)
 ARQ_TOKEN = motor.PASTA_APP / "youtube_token.json"       # autorização da conta (criada no login)
 ARQ_AGENDA = motor.PASTA_APP / "youtube_agenda.json"     # último horário agendado
@@ -92,6 +93,12 @@ def _credenciais(permitir_login: bool):
     cred = None
     if ARQ_TOKEN.exists():
         cred = Credentials.from_authorized_user_file(str(ARQ_TOKEN), ESCOPOS)
+        concedidos = set(json.loads(ARQ_TOKEN.read_text(encoding="utf-8")).get("scopes") or [])
+        if not set(ESCOPOS) <= concedidos:  # autorização antiga, sem as permissões novas
+            if not permitir_login:
+                raise RuntimeError("O programa precisa de uma permissão nova do YouTube. "
+                                   "Clique em 'Conectar YouTube...' e entre de novo.")
+            cred = None
     if cred and cred.valid:
         return cred
     if cred and cred.expired and cred.refresh_token:
@@ -347,3 +354,45 @@ def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, 
         tirar_da_fila(q)
     log(f"Pronto: {feitos} cortes enviados ao YouTube.")
     return feitos
+
+
+def apagar_sem_views(log: Log, confirmar=None) -> list[str]:
+    """Apaga do YouTube os Shorts publicados pelo programa que estão com 0 visualizações e
+    tira eles do registro, para voltarem a ser publicáveis. `confirmar(lista)` pode cancelar."""
+    import aprendizado
+
+    dados = aprendizado.atualizar_desempenho(log)
+    alvos = [v for v in dados if v.get("views", 0) == 0]
+    if not alvos:
+        log("Nenhum Short com 0 visualizações.")
+        return []
+    if confirmar and not confirmar(alvos):
+        log("Exclusão cancelada.")
+        return []
+    servico = _servico()
+    registro = publicados()
+    apagados = []
+    for v in alvos:
+        try:
+            servico.videos().delete(id=v["id"]).execute()
+        except Exception as e:
+            log(f"  ⚠ Não consegui apagar '{v['titulo']}': {e}")
+            continue
+        apagados.append(v["id"])
+        for chave, info in list(registro.items()):
+            if info.get("link", "").endswith(v["id"]):
+                registro.pop(chave)
+                pasta = motor.PASTA_SAIDA / chave.split("/")[0]
+                arquivo = chave.split("/", 1)[1]
+
+                def limpar(lista, arquivo=arquivo):
+                    for x in lista:
+                        if x["arquivo"] == arquivo:
+                            x.pop("youtube", None)
+                            x["republicar"] = True
+                if (pasta / "cortes.json").exists():
+                    motor.alterar_cortes_json(pasta, limpar)
+        log(f"  🗑 apagado: {v['titulo']}")
+    ARQ_PUBLICADOS.write_text(json.dumps(registro, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"{len(apagados)} Shorts apagados do YouTube.")
+    return apagados

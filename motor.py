@@ -1012,6 +1012,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
     falhos: list[tuple[int, Path]] = []
     total = 0
     n_bloco = 0
+    vigia = {"tamanho": -1, "desde": time.time()}  # detecta gravação travada (sem dados chegando)
 
     def pendentes(gravando: bool) -> list[Path]:
         arqs = sorted(pasta_blocos.glob("r*_bloco_*.ts"))
@@ -1050,6 +1051,17 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
                 falhos.append((n_bloco, bloco))
             log(f"— Bloco {n_bloco} pronto. Total até agora: {total} cortes em {pasta}")
 
+        if gravando and entrada_teste is None:
+            atuais = sorted(pasta_blocos.glob(f"r{rodada:02d}_bloco_*.ts"))
+            tamanho = sum(a.stat().st_size for a in atuais)
+            if tamanho != vigia["tamanho"]:
+                vigia.update(tamanho=tamanho, desde=time.time())
+            elif time.time() - vigia["desde"] > 60:
+                log("  ⚠ A gravação travou (nenhum dado da live há 60 s). Reconectando...")
+                gravador.kill()
+                gravador.wait()
+                gravando = False
+
         if not gravando:
             if parar.is_set() or entrada_teste is not None:
                 break
@@ -1067,6 +1079,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
             log("Reconectando na live...")
             rodada += 1
             gravador = _iniciar_gravacao(url, pasta_blocos, rodada, op, log)
+            vigia.update(tamanho=-1, desde=time.time())
             continue
 
         parar.wait(5)
