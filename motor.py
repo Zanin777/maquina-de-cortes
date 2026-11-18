@@ -11,6 +11,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -20,7 +21,12 @@ from typing import Callable
 
 Log = Callable[[str], None]
 
-PASTA_APP = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    # rodando como MaquinaDeCortes.exe: dados ficam em Documentos\MaquinaCortes
+    PASTA_APP = Path.home() / "Documents" / "MaquinaCortes"
+    PASTA_APP.mkdir(parents=True, exist_ok=True)
+else:
+    PASTA_APP = Path(__file__).resolve().parent
 PASTA_DOWNLOADS = PASTA_APP / "downloads"
 PASTA_SAIDA = PASTA_APP / "cortes"
 
@@ -68,6 +74,36 @@ class Corte:
 # ----------------------------------------------------------------------------
 # FFmpeg
 # ----------------------------------------------------------------------------
+SEM_JANELA = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _run(*args, **kwargs):
+    kwargs.setdefault("creationflags", SEM_JANELA)
+    return subprocess.run(*args, **kwargs)
+
+
+def tem_ffmpeg() -> bool:
+    try:
+        achar_exe("ffmpeg")
+        achar_exe("ffprobe")
+        return True
+    except RuntimeError:
+        return False
+
+
+def instalar_ffmpeg(log: Log) -> None:
+    """Instala o FFmpeg pelo winget (gerenciador de apps do Windows)."""
+    log("Instalando o FFmpeg pelo winget (uma vez só)...")
+    r = _run(["winget", "install", "-e", "--id", "Gyan.FFmpeg", "--silent",
+              "--accept-package-agreements", "--accept-source-agreements"],
+             capture_output=True, text=True)
+    if not tem_ffmpeg():
+        raise RuntimeError("Não consegui instalar o FFmpeg automaticamente.\n"
+                           "Instale manualmente: abra o PowerShell e rode  winget install Gyan.FFmpeg\n\n"
+                           + (r.stdout or r.stderr)[-500:])
+    log("FFmpeg instalado!")
+
+
 def achar_exe(nome: str) -> str:
     achado = shutil.which(nome)
     if achado:
@@ -87,7 +123,7 @@ def achar_exe(nome: str) -> str:
 
 
 def dimensoes_video(video: Path) -> tuple[int, int]:
-    saida = subprocess.run(
+    saida = _run(
         [achar_exe("ffprobe"), "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "json", str(video)],
         capture_output=True, text=True, check=True,
@@ -154,7 +190,7 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
     modelo = WhisperModel(op.modelo_whisper, device="auto", compute_type="int8")
     log("Extraindo o áudio...")
     import numpy as np
-    bruto = subprocess.run(
+    bruto = _run(
         [achar_exe("ffmpeg"), "-v", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
          "-f", "f32le", "-"], capture_output=True, check=True,
     ).stdout
@@ -267,7 +303,7 @@ def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
     # ambiente limpo: garante que ele use o seu login, e não variáveis de outro programa
     env = {k: v for k, v in os.environ.items()
            if not (k.startswith("CLAUDE") or k.startswith("ANTHROPIC"))}
-    r = subprocess.run(
+    r = _run(
         [exe, "-p", instrucao, "--output-format", "json"],
         input=conteudo, capture_output=True, text=True, encoding="utf-8", timeout=900, env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -391,7 +427,7 @@ def capturar_quadro(fonte: str, destino: Path) -> Path:
     else:
         dur = _duracao(Path(fonte))
         entrada = ["-ss", f"{min(120.0, dur / 3):.1f}", "-i", fonte]
-    r = subprocess.run([achar_exe("ffmpeg"), "-v", "error", "-y", *entrada, "-frames:v", "1",
+    r = _run([achar_exe("ffmpeg"), "-v", "error", "-y", *entrada, "-frames:v", "1",
                         "-vf", "scale=960:-2", str(destino)], capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or not destino.exists():
         raise RuntimeError(f"Não consegui pegar uma imagem do vídeo:\n{r.stderr[-500:]}")
@@ -644,7 +680,7 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
             "-r", "30", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
             str(destino.resolve()),
         ]
-        r = subprocess.run(cmd, cwd=tmp, capture_output=True, text=True)
+        r = _run(cmd, cwd=tmp, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"FFmpeg falhou:\n{r.stderr[-1500:]}")
 
@@ -723,7 +759,7 @@ def info_do_link(url: str, formato: str = "best") -> dict:
 
 def _duracao(arq: Path) -> float:
     try:
-        saida = subprocess.run(
+        saida = _run(
             [achar_exe("ffprobe"), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(arq)], capture_output=True, text=True,
         ).stdout.strip()

@@ -12,8 +12,8 @@ from tkinter import filedialog, messagebox, ttk
 
 import motor
 
-CONFIG = Path(__file__).resolve().parent / "config.json"
-REGISTRO = Path(__file__).resolve().parent / "registro.txt"
+CONFIG = motor.PASTA_APP / "config.json"
+REGISTRO = motor.PASTA_APP / "registro.txt"
 
 
 def carregar_config() -> dict:
@@ -256,6 +256,17 @@ class App(tk.Tk):
         if not fonte:
             messagebox.showwarning("Falta o vídeo", "Cole um link ou escolha um arquivo.")
             return
+        if not motor.tem_ffmpeg():
+            if not messagebox.askyesno("Falta o FFmpeg",
+                                       "O programa precisa do FFmpeg para editar os vídeos.\nInstalar agora? (grátis, uma vez só)"):
+                return
+            self.log("Instalando o FFmpeg, aguarde (pode levar alguns minutos)...")
+            self.update()
+            try:
+                motor.instalar_ffmpeg(self.log)
+            except Exception as e:
+                messagebox.showerror("Erro", str(e))
+                return
         op = self.opcoes()
         sem_chave = not op.api_key.strip() and not os.environ.get("ANTHROPIC_API_KEY")
         if sem_chave and not motor.achar_claude_code():
@@ -291,5 +302,32 @@ class App(tk.Tk):
         os.startfile(pasta)
 
 
+def autoteste(arquivo: str | None) -> None:
+    """MaquinaDeCortes.exe --autoteste [video]: confere as bibliotecas e grava autoteste.txt."""
+    import sys as _sys
+    linhas = []
+    try:
+        import cv2, numpy, yt_dlp, anthropic, ctranslate2  # noqa: F401
+        from faster_whisper import WhisperModel
+        det = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        linhas.append(f"bibliotecas ok | detector de rosto vazio? {det.empty()}")
+        linhas.append(f"ffmpeg: {motor.tem_ffmpeg()} | claude code: {motor.achar_claude_code()}")
+        modelo = WhisperModel("tiny", device="cpu", compute_type="int8")
+        if arquivo:
+            bruto = motor._run([motor.achar_exe("ffmpeg"), "-v", "error", "-i", arquivo, "-ac", "1", "-ar", "16000",
+                                "-f", "f32le", "-"], capture_output=True, check=True).stdout
+            segs, _ = modelo.transcribe(numpy.frombuffer(bruto, dtype=numpy.float32), language="pt")
+            linhas.append("transcrição: " + " ".join(s.text for s in segs)[:200])
+        linhas.append("OK")
+    except Exception:
+        linhas.append(traceback.format_exc())
+    (motor.PASTA_APP / "autoteste.txt").write_text("\n".join(linhas), encoding="utf-8")
+    _sys.exit(0)
+
+
 if __name__ == "__main__":
+    import sys
+    if "--autoteste" in sys.argv:
+        resto = sys.argv[sys.argv.index("--autoteste") + 1:]
+        autoteste(resto[0] if resto else None)
     App().mainloop()

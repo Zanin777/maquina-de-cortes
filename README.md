@@ -1,9 +1,23 @@
 # Máquina de Cortes
 
+<p align="center">
+  <a href="https://github.com/Zanin777/maquina-de-cortes/releases/latest/download/MaquinaDeCortes.exe">
+    <img src="https://img.shields.io/badge/⬇%20Baixar-MaquinaDeCortes.exe-E01A1A?style=for-the-badge&logo=windows&logoColor=white" alt="Baixar MaquinaDeCortes.exe">
+  </a>
+</p>
+
+**Para usar:** clique no botão acima, abra o `MaquinaDeCortes.exe` e pronto — não precisa instalar Python.
+- Na 1ª vez, se faltar o FFmpeg, o programa oferece instalar sozinho.
+- Para a IA: use uma chave da API **ou** o Claude Code logado na sua conta Pro/Max (veja abaixo).
+- O Windows pode mostrar "O Windows protegeu o computador" (o .exe não é assinado): clique em
+  **Mais informações → Executar assim mesmo**.
+- Os cortes ficam em `Documentos\MaquinaCortes\cortes`.
+
 Pega um vídeo longo (arquivo do PC ou link), acha os melhores momentos com IA e
 entrega cortes prontos para TikTok/Reels/Shorts.
 
-## Como usar
+## Rodar pelo código-fonte (opcional)
+Para quem prefere rodar o código em vez do .exe (para gerar o .exe: `gerar_exe.bat`):
 1. Dê dois cliques em **iniciar.bat** (na 1ª vez ele instala tudo, demora alguns minutos).
 2. Cole um link ou clique em **Escolher arquivo...**
 3. Escolha como usar a IA (veja abaixo).

@@ -11,3 +11,8 @@ cortes/
 __pycache__/
 *.pyc
 .venv/
+
+# Gerado pelo gerar_exe.bat
+build/
+dist/
+*.spec
