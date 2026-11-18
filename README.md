@@ -6,8 +6,27 @@ entrega cortes prontos para TikTok/Reels/Shorts.
 ## Como usar
 1. Dê dois cliques em **iniciar.bat** (na 1ª vez ele instala tudo, demora alguns minutos).
 2. Cole um link ou clique em **Escolher arquivo...**
-3. Cole sua chave da API Claude (crie em https://console.anthropic.com). Ela fica salva em `config.json`.
+3. Escolha como usar a IA (veja abaixo).
 4. Clique em **Fazer cortes**.
+
+## IA: assinatura Pro ou chave de API
+- **Assinatura Claude Pro/Max (sem custo extra):** instale o Claude Code e faça login uma vez
+  com sua conta. Deixe o campo da chave **vazio** e o programa usa o Claude Code.
+  ```powershell
+  irm https://claude.ai/install.ps1 | iex
+  claude
+  ```
+  (conta nos limites de uso da sua assinatura)
+- **Chave de API:** crie em https://console.anthropic.com (cobrança separada, por uso) e cole na janela.
+  Fica salva em `config.json`, que não vai pro GitHub.
+
+## Live ao vivo
+Cole o link de uma live **que está acontecendo** (YouTube, Twitch...). O programa percebe que é ao vivo,
+grava em blocos (padrão: 30 min, ajuste em "Live: cortar a cada") e solta os cortes de cada bloco
+assim que ele fecha. Clique em **Parar live** para encerrar — o último bloco ainda é cortado.
+Se a conexão cair no meio, ele reconecta sozinho enquanto a live estiver no ar.
+Os cortes saem como `b01-01 ...`, `b02-01 ...` (bloco - número do corte).
+Obs.: um momento que fica bem na divisa entre dois blocos pode ser perdido.
 
 Os cortes saem em `cortes\<nome do vídeo>\`, junto com `legendas_dos_posts.txt`
 (título + descrição com hashtags de cada corte, pra colar no post).

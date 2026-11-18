@@ -45,7 +45,7 @@ class App(tk.Tk):
         ttk.Button(frm, text="Escolher arquivo...", command=self.escolher).grid(row=1, column=2, **pad)
 
         # Chave
-        ttk.Label(frm, text="Chave da API Claude:").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Chave da API (opcional):").grid(row=2, column=0, sticky="w", **pad)
         self.chave = tk.StringVar(value=cfg.get("api_key", ""))
         ttk.Entry(frm, textvariable=self.chave, show="•").grid(row=2, column=1, columnspan=2, sticky="ew", **pad)
 
@@ -65,6 +65,10 @@ class App(tk.Tk):
         ttk.Label(nums, text="Precisão da transcrição:").pack(side="left")
         ttk.Combobox(nums, textvariable=self.whisper, width=9, state="readonly",
                      values=["tiny", "base", "small", "medium", "large-v3"]).pack(side="left", padx=4)
+        self.bloco = tk.IntVar(value=cfg.get("bloco_min", 30))
+        ttk.Label(nums, text="   Live: cortar a cada").pack(side="left")
+        ttk.Spinbox(nums, from_=5, to=120, width=4, textvariable=self.bloco).pack(side="left", padx=4)
+        ttk.Label(nums, text="min").pack(side="left")
 
         # Edição
         ed = ttk.LabelFrame(frm, text="Edição", padding=8)
@@ -86,8 +90,11 @@ class App(tk.Tk):
         bts.grid(row=7, column=0, columnspan=3, sticky="ew", pady=8)
         self.bt_ir = ttk.Button(bts, text="▶  Fazer cortes", command=self.iniciar)
         self.bt_ir.pack(side="left", padx=10)
+        self.bt_parar = ttk.Button(bts, text="■  Parar live", command=self.parar_live, state="disabled")
+        self.bt_parar.pack(side="left", padx=(0, 10))
         self.bt_pasta = ttk.Button(bts, text="Abrir pasta dos cortes", command=self.abrir_pasta)
         self.bt_pasta.pack(side="left")
+        self.parar = threading.Event()
         self.barra = ttk.Progressbar(bts, mode="indeterminate", length=200)
         self.barra.pack(side="right", padx=10)
 
@@ -118,6 +125,7 @@ class App(tk.Tk):
             elif tipo == "fim":
                 self.barra.stop()
                 self.bt_ir.config(state="normal")
+                self.bt_parar.config(state="disabled")
                 if isinstance(valor, Path):
                     self.pasta_saida = valor
                     if messagebox.askyesno("Pronto!", "Cortes prontos. Abrir a pasta?"):
@@ -131,8 +139,13 @@ class App(tk.Tk):
             qtd_cortes=self.qtd.get(), dur_min=self.dmin.get(), dur_max=self.dmax.get(),
             modelo_whisper=self.whisper.get(), vertical=self.vertical.get(),
             legendas=self.legendas.get(), zoom=self.zoom.get(), titulo=self.titulo.get(),
-            api_key=self.chave.get(), instrucoes_extras=self.extras.get(),
+            api_key=self.chave.get(), instrucoes_extras=self.extras.get(), bloco_min=self.bloco.get(),
         )
+
+    def parar_live(self):
+        self.parar.set()
+        self.bt_parar.config(state="disabled")
+        self.log("Pedido de parada recebido — terminando o último bloco...")
 
     def iniciar(self):
         fonte = self.fonte.get().strip()
@@ -140,19 +153,28 @@ class App(tk.Tk):
             messagebox.showwarning("Falta o vídeo", "Cole um link ou escolha um arquivo.")
             return
         op = self.opcoes()
-        if not op.api_key.strip() and not os.environ.get("ANTHROPIC_API_KEY"):
-            messagebox.showwarning("Falta a chave", "Coloque sua chave da API Claude (console.anthropic.com).")
+        sem_chave = not op.api_key.strip() and not os.environ.get("ANTHROPIC_API_KEY")
+        if sem_chave and not motor.achar_claude_code():
+            messagebox.showwarning(
+                "Falta a IA",
+                "Coloque uma chave da API (console.anthropic.com)\nou instale o Claude Code e faça login "
+                "com sua conta Pro (veja o README).")
             return
         cfg = {k: v for k, v in vars(op).items()}
         CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
         self.bt_ir.config(state="disabled")
+        self.parar.clear()
+        if motor.eh_link(fonte):
+            self.bt_parar.config(state="normal")
         self.barra.start(12)
         self.log("-" * 60)
+        if sem_chave:
+            self.log("Sem chave de API: usando sua assinatura Claude pelo Claude Code.")
 
         def trabalho():
             try:
-                pasta = motor.processar(fonte, op, lambda m: self.fila.put(("log", m)))
+                pasta = motor.processar(fonte, op, lambda m: self.fila.put(("log", m)), self.parar)
                 self.fila.put(("fim", pasta))
             except Exception as e:
                 self.fila.put(("log", traceback.format_exc()))
