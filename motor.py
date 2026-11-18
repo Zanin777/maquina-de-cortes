@@ -503,7 +503,18 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
     return len(cortes)
 
 
+def checar_caminho() -> None:
+    """O Windows limita caminhos a 260 caracteres; avisa antes de perder tempo transcrevendo."""
+    if os.name == "nt" and len(str(PASTA_APP)) > 120:
+        raise RuntimeError(
+            f"A pasta do programa tem um caminho muito longo ({len(str(PASTA_APP))} caracteres) e o Windows "
+            "não consegue salvar os arquivos.\nMova a pasta para um lugar com caminho curto, "
+            "por exemplo C:\\MaquinaCortes ou Documentos\\MaquinaCortes."
+        )
+
+
 def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = None) -> Path:
+    checar_caminho()
     achar_exe("ffmpeg")
     parar = parar or threading.Event()
     if eh_link(fonte):
@@ -561,8 +572,9 @@ def _iniciar_gravacao(url_live: str, pasta_blocos: Path, rodada: int, op: Opcoes
 def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threading.Event,
                       entrada_teste: list[str] | None = None) -> Path:
     titulo = _nome_arquivo(re.sub(r"\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "", info.get("title") or "live"))
+    titulo = titulo[:40].rstrip(". ")
     pasta = PASTA_SAIDA / f"{titulo} (ao vivo)"
-    pasta_blocos = PASTA_DOWNLOADS / f"{titulo} (ao vivo)"
+    pasta_blocos = PASTA_DOWNLOADS / f"live-{titulo[:25].rstrip('. ')}"
     pasta_blocos.mkdir(parents=True, exist_ok=True)
     log(f"🔴 Live detectada: {info.get('title')}")
     log(f"Cada {op.bloco_min} min de live vira um bloco; os cortes de cada bloco saem assim que ele fecha.")

@@ -1,5 +1,6 @@
 # Chave da API e preferências (nunca enviar)
 config.json
+registro.txt
 
 # Vídeos baixados e cortes gerados
 downloads/

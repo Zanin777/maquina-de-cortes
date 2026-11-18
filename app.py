@@ -3,6 +3,7 @@ import json
 import os
 import queue
 import threading
+import time
 import traceback
 import tkinter as tk
 from pathlib import Path
@@ -11,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 import motor
 
 CONFIG = Path(__file__).resolve().parent / "config.json"
+REGISTRO = Path(__file__).resolve().parent / "registro.txt"
 
 
 def carregar_config() -> dict:
@@ -116,6 +118,11 @@ class App(tk.Tk):
     def log(self, msg: str):
         self.log_txt.insert("end", msg + "\n")
         self.log_txt.see("end")
+        try:  # cópia do registro em arquivo, para conferir erros depois
+            with open(REGISTRO, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
+        except OSError:
+            pass
 
     def ler_fila(self):
         while not self.fila.empty():
