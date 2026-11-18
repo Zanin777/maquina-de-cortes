@@ -1,0 +1,5 @@
+anthropic>=2.10
+faster-whisper==1.2.1
+yt-dlp
+opencv-python>=4.10,<5
+numpy

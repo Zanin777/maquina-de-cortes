@@ -1,0 +1,12 @@
+# Chave da API e preferências (nunca enviar)
+config.json
+
+# Vídeos baixados e cortes gerados
+downloads/
+cortes/
+*.transcricao-*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
