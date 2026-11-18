@@ -12,6 +12,8 @@ if not exist "%VENV%\Scripts\python.exe" (
   --collect-data faster_whisper ^
   --collect-binaries ctranslate2 ^
   --collect-data cv2 ^
+  --collect-data googleapiclient ^
+  --hidden-import publicador ^
   --collect-submodules yt_dlp ^
   --add-binary "C:\Windows\System32\msvcp140.dll;." ^
   --add-binary "C:\Windows\System32\vcruntime140.dll;." ^

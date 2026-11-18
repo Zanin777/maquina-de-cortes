@@ -1,6 +1,10 @@
 # Chave da API e preferências (nunca enviar)
 config.json
 registro.txt
+# Credenciais e autorização do YouTube (nunca enviar)
+youtube_*.json
+client_secret*.json
+autoteste.txt
 
 # Vídeos baixados e cortes gerados
 downloads/

@@ -47,6 +47,30 @@ O rosto é achado sozinho. Se o recorte não ficar bom, clique em **Marcar webca
 retângulo em volta do rosto e salve — fica guardado para as próximas lives (o botão **Automática** desfaz).
 Para vídeos sem webcam, troque o layout para **Normal**.
 
+## Publicar no YouTube Shorts automaticamente
+Cada corte pronto pode ir direto pro seu canal (título, descrição e #shorts já vão junto).
+O login é feito por você, no navegador, numa tela do Google — o programa **nunca vê sua senha**,
+só guarda uma autorização no seu PC (`Documentos\MaquinaCortes\youtube_token.json`).
+
+**Configuração (uma vez só, grátis):**
+1. Entre em https://console.cloud.google.com com a conta do canal e crie um projeto (ex.: "Maquina de Cortes").
+2. Em **APIs e serviços → Biblioteca**, procure **YouTube Data API v3** e clique em **Ativar**.
+3. Em **Tela de permissão OAuth** (ou "Google Auth Platform"): tipo **Externo**, preencha nome e e-mail,
+   e em **Usuários de teste** adicione o e-mail da conta do canal.
+4. Em **Credenciais → Criar credenciais → ID do cliente OAuth**, tipo **App para computador**. Baixe o JSON.
+5. Na Máquina de Cortes, clique em **Conectar YouTube...**, escolha esse JSON e faça login no navegador.
+   Vai aparecer um aviso de "app não verificado" (é o seu próprio app): **Avançado → Acessar**.
+
+**Opções na janela:**
+- **Público na hora**, **Agendado (fila)** — um Short a cada X horas, para não soltar tudo de uma vez —,
+  **Não listado** (você revisa antes) ou **Privado**.
+- **Nota mínima:** só publica cortes que a IA avaliou com nota igual ou maior.
+- O link de cada Short aparece no registro e fica salvo em `cortes.json`.
+
+Obs.: com o app em modo de teste, o Google pode pedir para entrar de novo a cada 7 dias.
+Publique só conteúdo que você tem direito de usar (cortes de lives de terceiros precisam de autorização
+do streamer, senão o canal pode levar reivindicação de direitos autorais ou strike).
+
 ## Live ao vivo
 Cole o link de uma live **que está acontecendo** (YouTube, Twitch...). O programa percebe que é ao vivo,
 grava em blocos (padrão: 30 min, ajuste em "Live: cortar a cada") e solta os cortes de cada bloco

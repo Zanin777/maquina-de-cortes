@@ -52,6 +52,10 @@ class Opcoes:
     bloco_min: int = 30  # live ao vivo: de quanto em quanto tempo sai uma leva de cortes
     layout: str = "streamer"  # "streamer" = webcam em cima e jogo embaixo; "normal" = um quadro só
     cam_regiao: list | None = None  # webcam marcada à mão: [x, y, largura, altura] em frações do quadro
+    publicar_youtube: bool = False  # envia cada corte pronto para o YouTube Shorts
+    yt_modo: str = "publico"  # publico | nao_listado | privado | agendado
+    yt_intervalo_h: float = 2  # modo agendado: um Short a cada X horas
+    yt_nota_min: int = 7  # só publica cortes com nota da IA igual ou maior
 
 
 @dataclass
@@ -709,6 +713,18 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
         renderizar(video, c, pasta / nome, op, log)
         r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao,
              "nota": c.nota, "origem": video.name, "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
+        if op.publicar_youtube:
+            if c.nota >= op.yt_nota_min:
+                try:
+                    import publicador
+                    log(f"  Publicando no YouTube Shorts ({op.yt_modo})...")
+                    r["youtube"] = publicador.publicar(pasta / nome, c.titulo, c.descricao,
+                                                       op.yt_modo, op.yt_intervalo_h, log)
+                    log(f"  ✅ No YouTube: {r['youtube']}")
+                except Exception as e:
+                    log(f"  ⚠ Não consegui publicar no YouTube: {e}")
+            else:
+                log(f"  (nota {c.nota} abaixo da mínima {op.yt_nota_min}: não publicado)")
         resumo.append(r)
         arq_json.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
         with open(pasta / "legendas_dos_posts.txt", "a", encoding="utf-8") as f:

@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import motor
+import publicador
 
 CONFIG = motor.PASTA_APP / "config.json"
 REGISTRO = motor.PASTA_APP / "registro.txt"
@@ -27,7 +28,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Máquina de Cortes")
-        self.geometry("820x720")
+        self.geometry("840x800")
         self.minsize(640, 560)
         self.fila: queue.Queue = queue.Queue()
         self.pasta_saida: Path | None = None
@@ -100,13 +101,34 @@ class App(tk.Tk):
         ttk.Label(lay, textvariable=self.cam_txt, foreground="#666").pack(side="left", padx=8)
         self.atualizar_cam_txt()
 
-        ttk.Label(frm, text="Instruções para a IA (opcional):").grid(row=6, column=0, columnspan=3, sticky="w", **pad)
+        # YouTube Shorts
+        yt = ttk.LabelFrame(frm, text="YouTube Shorts", padding=8)
+        yt.grid(row=6, column=0, columnspan=3, sticky="ew", **pad)
+        self.publicar = tk.BooleanVar(value=cfg.get("publicar_youtube", False))
+        ttk.Checkbutton(yt, text="Publicar automaticamente", variable=self.publicar).pack(side="left")
+        self.modos_yt = {"Público na hora": "publico", "Agendado (fila)": "agendado",
+                         "Não listado (revisar antes)": "nao_listado", "Privado": "privado"}
+        self.modo_yt = tk.StringVar(value=next((k for k, v in self.modos_yt.items()
+                                                if v == cfg.get("yt_modo", "publico")), "Público na hora"))
+        ttk.Combobox(yt, textvariable=self.modo_yt, width=24, state="readonly",
+                     values=list(self.modos_yt)).pack(side="left", padx=6)
+        ttk.Label(yt, text="1 a cada").pack(side="left")
+        self.intervalo_yt = tk.DoubleVar(value=cfg.get("yt_intervalo_h", 2))
+        ttk.Spinbox(yt, from_=0.5, to=48, increment=0.5, width=4, textvariable=self.intervalo_yt).pack(side="left", padx=3)
+        ttk.Label(yt, text="h   nota mín.").pack(side="left")
+        self.nota_yt = tk.IntVar(value=cfg.get("yt_nota_min", 7))
+        ttk.Spinbox(yt, from_=1, to=10, width=3, textvariable=self.nota_yt).pack(side="left", padx=3)
+        ttk.Button(yt, text="Conectar YouTube...", command=self.conectar_youtube).pack(side="left", padx=(10, 4))
+        self.yt_txt = tk.StringVar(value="conectado" if publicador.conectado() else "não conectado")
+        ttk.Label(yt, textvariable=self.yt_txt, foreground="#666").pack(side="left")
+
+        ttk.Label(frm, text="Instruções para a IA (opcional):").grid(row=7, column=0, columnspan=3, sticky="w", **pad)
         self.extras = tk.StringVar(value=cfg.get("instrucoes_extras", ""))
-        ttk.Entry(frm, textvariable=self.extras).grid(row=7, column=0, columnspan=3, sticky="ew", **pad)
+        ttk.Entry(frm, textvariable=self.extras).grid(row=8, column=0, columnspan=3, sticky="ew", **pad)
 
         # Botões
         bts = ttk.Frame(frm)
-        bts.grid(row=8, column=0, columnspan=3, sticky="ew", pady=8)
+        bts.grid(row=9, column=0, columnspan=3, sticky="ew", pady=8)
         self.bt_ir = ttk.Button(bts, text="▶  Fazer cortes", command=self.iniciar)
         self.bt_ir.pack(side="left", padx=10)
         self.bt_parar = ttk.Button(bts, text="■  Parar live", command=self.parar_live, state="disabled")
@@ -120,8 +142,8 @@ class App(tk.Tk):
         # Log
         self.log_txt = tk.Text(frm, height=14, wrap="word", font=("Consolas", 9),
                                bg="#111", fg="#ddd", insertbackground="#ddd")
-        self.log_txt.grid(row=9, column=0, columnspan=3, sticky="nsew", padx=10, pady=4)
-        frm.rowconfigure(9, weight=1)
+        self.log_txt.grid(row=10, column=0, columnspan=3, sticky="nsew", padx=10, pady=4)
+        frm.rowconfigure(10, weight=1)
 
         self.after(100, self.ler_fila)
         self.log("Cole um link (YouTube, Twitch...) ou escolha um vídeo do PC e clique em Fazer cortes.")
@@ -148,6 +170,8 @@ class App(tk.Tk):
                 self.log(valor)
             elif tipo == "quadro":
                 self.abrir_marcador(valor)
+            elif tipo == "yt":
+                self.yt_txt.set(valor)
             elif tipo == "fim":
                 self.barra.stop()
                 self.bt_ir.config(state="normal")
@@ -167,7 +191,33 @@ class App(tk.Tk):
             legendas=self.legendas.get(), zoom=self.zoom.get(), titulo=self.titulo.get(),
             api_key=self.chave.get(), instrucoes_extras=self.extras.get(), bloco_min=self.bloco.get(),
             layout=self.layouts.get(self.layout.get(), "streamer"), cam_regiao=self.cam_regiao,
+            publicar_youtube=self.publicar.get(), yt_modo=self.modos_yt.get(self.modo_yt.get(), "publico"),
+            yt_intervalo_h=self.intervalo_yt.get(), yt_nota_min=self.nota_yt.get(),
         )
+
+    # ---------------- YouTube ----------------
+    def conectar_youtube(self):
+        arquivo = None
+        if not publicador.ARQ_CLIENTE.exists() or messagebox.askyesno(
+                "Conectar YouTube", "Escolher um arquivo de credencial novo do Google?\n"
+                                    "(Não = usar o que já está salvo)"):
+            arquivo = filedialog.askopenfilename(
+                title="Escolha o arquivo de credencial baixado do Google Cloud (client_secret...json)",
+                filetypes=[("Credencial do Google", "*.json")])
+            if not arquivo:
+                return
+        self.yt_txt.set("aguardando login no navegador...")
+
+        def trabalho():
+            try:
+                canal = publicador.conectar(arquivo, lambda m: self.fila.put(("log", m)))
+                self.fila.put(("log", f"YouTube conectado: canal '{canal}'."))
+                self.fila.put(("yt", f"conectado: {canal}"))
+            except Exception as e:
+                self.fila.put(("log", f"Erro ao conectar o YouTube: {e}"))
+                self.fila.put(("yt", "não conectado"))
+
+        threading.Thread(target=trabalho, daemon=True).start()
 
     # ---------------- webcam ----------------
     def atualizar_cam_txt(self):
@@ -268,6 +318,10 @@ class App(tk.Tk):
                 messagebox.showerror("Erro", str(e))
                 return
         op = self.opcoes()
+        if op.publicar_youtube and not publicador.conectado():
+            messagebox.showwarning("YouTube", "Conecte sua conta do YouTube primeiro (botão 'Conectar YouTube...')\n"
+                                              "ou desmarque 'Publicar automaticamente'.")
+            return
         sem_chave = not op.api_key.strip() and not os.environ.get("ANTHROPIC_API_KEY")
         if sem_chave and not motor.achar_claude_code():
             messagebox.showwarning(
@@ -312,6 +366,9 @@ def autoteste(arquivo: str | None) -> None:
         det = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         linhas.append(f"bibliotecas ok | detector de rosto vazio? {det.empty()}")
         linhas.append(f"ffmpeg: {motor.tem_ffmpeg()} | claude code: {motor.achar_claude_code()}")
+        from googleapiclient.discovery import build
+        build("youtube", "v3", developerKey="teste", cache_discovery=False)
+        linhas.append("youtube api ok")
         modelo = WhisperModel("tiny", device="cpu", compute_type="int8")
         if arquivo:
             bruto = motor._run([motor.achar_exe("ffmpeg"), "-v", "error", "-i", arquivo, "-ac", "1", "-ar", "16000",
