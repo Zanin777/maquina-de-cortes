@@ -677,6 +677,12 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
     def com_zoom(W, H):
         return [f"scale=w='2*trunc({W}*{zoom}/2)':h='2*trunc({H}*{zoom}/2)':eval=frame", f"crop={W}:{H}"]
 
+    # Busca em 2 etapas: o -ss antes do -i pula rápido para alguns segundos antes do corte e o
+    # trim no filtro corta no quadro exato. Só com o -ss antes do -i, em arquivos .ts de live o
+    # vídeo começava no próximo quadro-chave (até 2 s depois) e o início ficava congelado.
+    pre = min(corte.inicio, 3.0)
+    corte_fino = f"trim=start={pre:.3f}:duration={dur:.3f},setpts=PTS-STARTPTS,"
+    audio_fino = f"atrim=start={pre:.3f}:duration={dur:.3f},asetpts=PTS-STARTPTS"
     margem_tit = None
     margem_leg = None
     grafo = None
@@ -693,7 +699,7 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
             faixa_h = _altura_faixa(corte.titulo) if op.titulo and corte.titulo else 0
             gy = faixa_h if faixa_h else (GAME_H - jogo_h) // 2
             cam_zoom = ",".join(com_zoom(1080, CAM_H)) + "," if op.zoom else ""
-            grafo = (f"[0:v]split=3[a][b][c];"
+            grafo = (f"[0:v]{corte_fino}split=3[a][b][c];"
                      f"[a]crop={cw}:{ch}:{cx}:{cy},scale=1080:{CAM_H},{cam_zoom}setsar=1[cam];"
                      f"[b]scale=1080:{GAME_H}:force_original_aspect_ratio=increase,crop=1080:{GAME_H},"
                      f"boxblur=25:2,eq=brightness=-0.12,setsar=1[fundo];"
@@ -704,6 +710,7 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
             margem_leg = max(40, (GAME_H - gy - jogo_h) // 2 - 40)  # legenda no espaço embaixo do jogo
 
     if grafo is None:
+        filtros.append(corte_fino.rstrip(","))
         if op.vertical:
             W, H = 1080, 1920
             if vw / vh > 9 / 16:  # vídeo mais largo que 9:16 -> recorta nas laterais
@@ -734,13 +741,13 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
 
         if grafo:
             video_args = ["-filter_complex", f"{grafo}[st];[st]{','.join(filtros)}[v]",
-                          "-map", "[v]", "-map", "0:a?"]
+                          "-map", "[v]", "-map", "0:a?", "-af", audio_fino]
         else:
-            video_args = ["-vf", ",".join(filtros)]
+            video_args = ["-vf", ",".join(filtros), "-af", audio_fino]
         cmd = [
             achar_exe("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{corte.inicio:.3f}", "-t", f"{dur:.3f}", "-i", str(video.resolve()),
-            *video_args,
+            "-ss", f"{corte.inicio - pre:.3f}", "-i", str(video.resolve()),
+            *video_args, "-t", f"{dur:.3f}",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
             "-r", "30", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
             str(destino.resolve()),
