@@ -54,7 +54,7 @@ class Opcoes:
     cam_regiao: list | None = None  # webcam marcada à mão: [x, y, largura, altura] em frações do quadro
     publicar_youtube: bool = False  # envia cada corte pronto para o YouTube Shorts
     yt_modo: str = "publico"  # publico | nao_listado | privado | agendado
-    yt_intervalo_h: float = 2  # modo agendado: um Short a cada X horas
+    yt_intervalo_min: int = 20  # modo agendado: um Short a cada X minutos
     yt_nota_min: int = 7  # só publica cortes com nota da IA igual ou maior
 
 
@@ -73,6 +73,7 @@ class Corte:
     descricao: str
     nota: int
     palavras: list[Palavra] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------
@@ -238,10 +239,13 @@ SCHEMA_CORTES = {
                     "inicio": {"type": "number", "description": "segundo de início"},
                     "fim": {"type": "number", "description": "segundo de fim"},
                     "titulo": {"type": "string", "description": "título curto e chamativo, até 8 palavras"},
-                    "descricao": {"type": "string", "description": "legenda do post com 2-3 hashtags"},
+                    "descricao": {"type": "string", "description": "legenda do post: 1-2 frases que dão vontade "
+                                  "de assistir + 3 a 5 hashtags (jogo, streamer, tema), sem #shorts"},
+                    "tags": {"type": "array", "items": {"type": "string"},
+                             "description": "5 a 10 termos de busca do YouTube (sem #)"},
                     "nota": {"type": "integer", "description": "potencial de viralizar de 1 a 10"},
                 },
-                "required": ["inicio", "fim", "titulo", "descricao", "nota"],
+                "required": ["inicio", "fim", "titulo", "descricao", "nota", "tags"],
                 "additionalProperties": False,
             },
         }
@@ -302,7 +306,8 @@ def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
     log("Pedindo para o Claude (pela sua assinatura, via Claude Code) escolher os melhores momentos...")
     instrucao = (
         f"{sistema}\n\nResponda SOMENTE com um JSON válido, sem texto antes ou depois, neste formato:\n"
-        '{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", "descricao": "...", "nota": 8}]}'
+        '{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", "descricao": "... #hashtag #hashtag #hashtag", '
+        '"nota": 8, "tags": ["termo", "termo"]}]}'
     )
     # ambiente limpo: garante que ele use o seu login, e não variáveis de outro programa
     env = {k: v for k, v in os.environ.items()
@@ -339,6 +344,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
     pedido = (
         f"Escolha até {op.qtd_cortes} cortes, cada um entre {op.dur_min} e {op.dur_max} segundos. "
         "Use os segundos dos colchetes para 'inicio' e 'fim'. Escreva título e descrição em português do Brasil. "
+        "Na descrição: 1 ou 2 frases que deem vontade de assistir, seguidas de 3 a 5 hashtags relevantes "
+        "(o jogo, o nome do streamer se aparecer na fala ou no contexto, o tema do momento); não use #shorts. "
+        "Em 'tags': 5 a 10 termos que as pessoas buscariam no YouTube para achar esse corte. "
         "Ordene do melhor para o pior."
     )
     if op.instrucoes_extras.strip():
@@ -366,7 +374,7 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
         if any(ini < o.fim and fim > o.inicio for o in cortes):
             continue
         cortes.append(Corte(ini, fim, c["titulo"].strip(), c["descricao"].strip(),
-                            int(c["nota"]), dentro))
+                            int(c["nota"]), dentro, tags=list(c.get("tags") or [])[:15]))
     log(f"A IA escolheu {len(cortes)} cortes.")
     for i, c in enumerate(cortes, 1):
         log(f"  {i}. [{_fmt(c.inicio)} → {_fmt(c.fim)}] nota {c.nota} — {c.titulo}")
@@ -697,7 +705,7 @@ def _nome_arquivo(txt: str) -> str:
     return (txt[:60] or "corte").rstrip(". ")
 
 
-def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "") -> int:
+def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "") -> int:
     """Transcreve, escolhe e edita os cortes de um arquivo. Retorna quantos cortes saíram."""
     segmentos = transcrever(video, op, log)
     if not segmentos:
@@ -711,7 +719,7 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
         log(f"Editando corte {i}/{len(cortes)}: {c.titulo}")
         renderizar(video, c, pasta / nome, op, log)
-        r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao,
+        r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao, "tags": c.tags, "fonte": fonte,
              "nota": c.nota, "origem": video.name, "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
         if op.publicar_youtube:
             if c.nota >= op.yt_nota_min:
@@ -719,7 +727,8 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
                     import publicador
                     log(f"  Publicando no YouTube Shorts ({op.yt_modo})...")
                     r["youtube"] = publicador.publicar(pasta / nome, c.titulo, c.descricao,
-                                                       op.yt_modo, op.yt_intervalo_h, log)
+                                                       op.yt_modo, op.yt_intervalo_min, log,
+                                                       tags=c.tags, fonte=fonte)
                     log(f"  ✅ No YouTube: {r['youtube']}")
                 except Exception as e:
                     log(f"  ⚠ Não consegui publicar no YouTube: {e}")
@@ -755,7 +764,7 @@ def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = 
     if (pasta / "legendas_dos_posts.txt").exists():
         (pasta / "legendas_dos_posts.txt").unlink()
         (pasta / "cortes.json").unlink(missing_ok=True)
-    n = cortar_video(video, pasta, op, log)
+    n = cortar_video(video, pasta, op, log, fonte=fonte.strip() if eh_link(fonte) else "")
     if not n:
         raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")
     log(f"Pronto! {n} cortes salvos em: {pasta}")
@@ -845,7 +854,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
             n_bloco += 1
             log(f"— Bloco {n_bloco} fechado ({dur / 60:.0f} min). Cortando...")
             try:
-                total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n_bloco:02d}-")
+                total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n_bloco:02d}-", fonte=url)
                 bloco.unlink(missing_ok=True)  # bloco já cortado: libera espaço (~3 GB por hora de live)
             except Exception as e:
                 log(f"  Erro no bloco {n_bloco}: {e}")

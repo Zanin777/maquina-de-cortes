@@ -113,9 +113,9 @@ class App(tk.Tk):
         ttk.Combobox(yt, textvariable=self.modo_yt, width=24, state="readonly",
                      values=list(self.modos_yt)).pack(side="left", padx=6)
         ttk.Label(yt, text="1 a cada").pack(side="left")
-        self.intervalo_yt = tk.DoubleVar(value=cfg.get("yt_intervalo_h", 2))
-        ttk.Spinbox(yt, from_=0.5, to=48, increment=0.5, width=4, textvariable=self.intervalo_yt).pack(side="left", padx=3)
-        ttk.Label(yt, text="h   nota mín.").pack(side="left")
+        self.intervalo_yt = tk.IntVar(value=cfg.get("yt_intervalo_min", 20))
+        ttk.Spinbox(yt, from_=5, to=1440, increment=5, width=5, textvariable=self.intervalo_yt).pack(side="left", padx=3)
+        ttk.Label(yt, text="min   nota mín.").pack(side="left")
         self.nota_yt = tk.IntVar(value=cfg.get("yt_nota_min", 7))
         ttk.Spinbox(yt, from_=1, to=10, width=3, textvariable=self.nota_yt).pack(side="left", padx=3)
         ttk.Button(yt, text="Conectar YouTube...", command=self.conectar_youtube).pack(side="left", padx=(10, 4))
@@ -135,6 +135,7 @@ class App(tk.Tk):
         self.bt_parar.pack(side="left", padx=(0, 10))
         self.bt_pasta = ttk.Button(bts, text="Abrir pasta dos cortes", command=self.abrir_pasta)
         self.bt_pasta.pack(side="left")
+        ttk.Button(bts, text="▲  Publicar cortes já feitos...", command=self.publicar_feitos).pack(side="left", padx=10)
         self.parar = threading.Event()
         self.barra = ttk.Progressbar(bts, mode="indeterminate", length=200)
         self.barra.pack(side="right", padx=10)
@@ -172,6 +173,8 @@ class App(tk.Tk):
                 self.abrir_marcador(valor)
             elif tipo == "yt":
                 self.yt_txt.set(valor)
+            elif tipo == "fim_yt":
+                self.barra.stop()
             elif tipo == "fim":
                 self.barra.stop()
                 self.bt_ir.config(state="normal")
@@ -192,10 +195,38 @@ class App(tk.Tk):
             api_key=self.chave.get(), instrucoes_extras=self.extras.get(), bloco_min=self.bloco.get(),
             layout=self.layouts.get(self.layout.get(), "streamer"), cam_regiao=self.cam_regiao,
             publicar_youtube=self.publicar.get(), yt_modo=self.modos_yt.get(self.modo_yt.get(), "publico"),
-            yt_intervalo_h=self.intervalo_yt.get(), yt_nota_min=self.nota_yt.get(),
+            yt_intervalo_min=self.intervalo_yt.get(), yt_nota_min=self.nota_yt.get(),
         )
 
     # ---------------- YouTube ----------------
+    def publicar_feitos(self):
+        if not publicador.conectado():
+            messagebox.showwarning("YouTube", "Conecte sua conta do YouTube primeiro (botão 'Conectar YouTube...').")
+            return
+        pasta = filedialog.askdirectory(title="Escolha a pasta dos cortes (ou a pasta 'cortes' inteira)",
+                                        initialdir=str(motor.PASTA_SAIDA))
+        if not pasta:
+            return
+        op = self.opcoes()
+        self.salvar_cfg()
+        modo_txt = self.modo_yt.get() + (f", 1 a cada {op.yt_intervalo_min} min" if op.yt_modo == "agendado" else "")
+        if not messagebox.askyesno("Publicar no YouTube",
+                                   f"Enviar os cortes dessa pasta que ainda não foram publicados?\n\n"
+                                   f"Modo: {modo_txt}\nNota mínima: {op.yt_nota_min}"):
+            return
+        self.barra.start(12)
+        self.log("-" * 60)
+
+        def trabalho():
+            try:
+                publicador.publicar_pasta(Path(pasta), op.yt_modo, op.yt_intervalo_min, op.yt_nota_min,
+                                          lambda m: self.fila.put(("log", m)))
+            except Exception as e:
+                self.fila.put(("log", f"Erro ao publicar: {e}"))
+            self.fila.put(("fim_yt", None))
+
+        threading.Thread(target=trabalho, daemon=True).start()
+
     def conectar_youtube(self):
         arquivo = None
         if not publicador.ARQ_CLIENTE.exists() or messagebox.askyesno(

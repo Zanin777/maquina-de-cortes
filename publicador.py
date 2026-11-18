@@ -86,8 +86,8 @@ def desconectar() -> None:
     ARQ_TOKEN.unlink(missing_ok=True)
 
 
-def proximo_horario(intervalo_h: float, agora: datetime | None = None) -> datetime:
-    """Próximo horário livre na fila de agendamento (um Short a cada `intervalo_h` horas)."""
+def proximo_horario(intervalo_min: float, agora: datetime | None = None) -> datetime:
+    """Próximo horário livre na fila de agendamento (um Short a cada `intervalo_min` minutos)."""
     agora = agora or datetime.now(timezone.utc)
     ultimo = None
     if ARQ_AGENDA.exists():
@@ -96,17 +96,30 @@ def proximo_horario(intervalo_h: float, agora: datetime | None = None) -> dateti
         except Exception:
             ultimo = None
     candidato = agora + timedelta(minutes=15)
-    if ultimo and ultimo + timedelta(hours=intervalo_h) > candidato:
-        candidato = ultimo + timedelta(hours=intervalo_h)
+    if ultimo and ultimo + timedelta(minutes=intervalo_min) > candidato:
+        candidato = ultimo + timedelta(minutes=intervalo_min)
     return candidato.replace(microsecond=0)
 
 
-def montar_corpo(titulo: str, descricao: str, modo: str, publicar_em: datetime | None) -> dict:
+def montar_corpo(titulo: str, descricao: str, modo: str, publicar_em: datetime | None,
+                 tags: list[str] | None = None, fonte: str = "") -> dict:
     titulo = titulo.strip()
     if "#shorts" not in titulo.lower() and len(titulo) <= 90:
         titulo += " #shorts"
     titulo = titulo.replace("<", "").replace(">", "")[:100]
+    if fonte:
+        descricao = descricao.strip() + f"\n\n🎥 Live original: {fonte}"
     descricao = (descricao.strip() + "\n\n#shorts").replace("<", "").replace(">", "")[:4900]
+    # tags: até ~450 caracteres no total (limite do YouTube é 500)
+    if not tags:  # cortes antigos sem tags: usa as hashtags da legenda
+        import re
+        tags = [h.replace('_', ' ') for h in re.findall(r"#(\w+)", descricao) if h.lower() != 'shorts']
+    lista, total = [], 0
+    for t in (tags or []):
+        t = t.replace("#", "").replace("<", "").replace(">", "").strip()
+        if t and total + len(t) + 2 <= 450:
+            lista.append(t)
+            total += len(t) + 2
     status = {"selfDeclaredMadeForKids": False}
     if modo == "agendado" and publicar_em:
         status["privacyStatus"] = "private"  # o YouTube exige 'private' para agendar
@@ -117,16 +130,17 @@ def montar_corpo(titulo: str, descricao: str, modo: str, publicar_em: datetime |
         status["privacyStatus"] = "private"
     else:
         status["privacyStatus"] = "public"
-    return {"snippet": {"title": titulo, "description": descricao, "categoryId": CATEGORIA_JOGOS},
+    return {"snippet": {"title": titulo, "description": descricao, "categoryId": CATEGORIA_JOGOS, "tags": lista},
             "status": status}
 
 
-def publicar(video: Path, titulo: str, descricao: str, modo: str, intervalo_h: float, log: Log) -> str:
+def publicar(video: Path, titulo: str, descricao: str, modo: str, intervalo_min: float, log: Log,
+             tags: list[str] | None = None, fonte: str = "") -> str:
     """Envia o vídeo e devolve o link do Short."""
     from googleapiclient.http import MediaFileUpload
 
-    publicar_em = proximo_horario(intervalo_h) if modo == "agendado" else None
-    corpo = montar_corpo(titulo, descricao, modo, publicar_em)
+    publicar_em = proximo_horario(intervalo_min) if modo == "agendado" else None
+    corpo = montar_corpo(titulo, descricao, modo, publicar_em, tags, fonte)
     servico = _servico()
     envio = servico.videos().insert(
         part="snippet,status", body=corpo, notifySubscribers=True,
@@ -142,3 +156,48 @@ def publicar(video: Path, titulo: str, descricao: str, modo: str, intervalo_h: f
         local = publicar_em.astimezone().strftime("%d/%m %H:%M")
         log(f"    agendado para {local}")
     return f"https://youtube.com/shorts/{resposta['id']}"
+
+
+def pastas_de_cortes(pasta: Path) -> list[Path]:
+    """A pasta escolhida, ou as subpastas dela que têm cortes (quando escolhem a pasta 'cortes' inteira)."""
+    if (pasta / "cortes.json").exists():
+        return [pasta]
+    return sorted(p.parent for p in pasta.glob("*/cortes.json"))
+
+
+def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, log: Log) -> int:
+    """Publica os cortes de uma pasta que ainda não foram pro YouTube (melhores notas primeiro)."""
+    pendentes = []
+    for p in pastas_de_cortes(pasta):
+        dados = json.loads((p / "cortes.json").read_text(encoding="utf-8"))
+        for i, r in enumerate(dados):
+            if r.get("youtube") or not (p / r["arquivo"]).exists():
+                continue
+            if r.get("nota", 0) < nota_min:
+                continue
+            pendentes.append((r.get("nota", 0), p, i))
+    if not pendentes:
+        log("Nenhum corte novo para publicar nessa pasta (ou todos abaixo da nota mínima).")
+        return 0
+    pendentes.sort(key=lambda x: -x[0])
+    log(f"{len(pendentes)} cortes para publicar ({modo}" + (f", 1 a cada {intervalo_min:g} min)" if modo == "agendado" else ")"))
+    feitos = 0
+    for n, (nota, p, i) in enumerate(pendentes, 1):
+        arq_json = p / "cortes.json"
+        dados = json.loads(arq_json.read_text(encoding="utf-8"))
+        r = dados[i]
+        log(f"[{n}/{len(pendentes)}] nota {nota} — {r['titulo']}")
+        try:
+            r["youtube"] = publicar(p / r["arquivo"], r["titulo"], r.get("descricao", ""), modo, intervalo_min, log,
+                                    tags=r.get("tags"), fonte=r.get("fonte", ""))
+        except Exception as e:
+            log(f"  ⚠ Erro: {e}")
+            if "quota" in str(e).lower() or "uploadLimitExceeded" in str(e):
+                log("  Limite diário do YouTube atingido — o resto fica para amanhã (é só clicar de novo).")
+                break
+            continue
+        arq_json.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+        log(f"  ✅ {r['youtube']}")
+        feitos += 1
+    log(f"Pronto: {feitos} cortes enviados ao YouTube.")
+    return feitos
