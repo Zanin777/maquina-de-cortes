@@ -799,6 +799,92 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
     return len(cortes)
 
 
+# ----------------------------------------------------------------------------
+# Completar legenda, hashtags e tags de cortes antigos
+# ----------------------------------------------------------------------------
+SCHEMA_LEGENDAS = {
+    "type": "object",
+    "properties": {
+        "itens": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "arquivo": {"type": "string"},
+                    "descricao": {"type": "string", "description": "1-2 frases + 3 a 5 hashtags, sem #shorts"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["arquivo", "descricao", "tags"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["itens"],
+    "additionalProperties": False,
+}
+FORMATO_LEGENDAS = '{"itens": [{"arquivo": "...", "descricao": "... #hashtag #hashtag #hashtag", "tags": ["termo"]}]}'
+
+
+def precisa_legenda(r: dict) -> bool:
+    return not r.get("tags") or "#" not in r.get("descricao", "")
+
+
+def completar_legendas(pasta: Path, op: Opcoes, log: Log, fonte: str = "", incluir_publicados: bool = False,
+                       refazer: bool = False) -> int:
+    """Pede à IA legenda + hashtags + tags para os cortes da pasta que estão sem (em lotes de 15)."""
+    try:
+        import aprendizado
+        import publicador
+        publicados = publicador.publicados()
+    except Exception:
+        aprendizado, publicados = None, {}
+    dados = json.loads((pasta / "cortes.json").read_text(encoding="utf-8"))
+    alvos = [r for r in dados if (refazer or precisa_legenda(r))
+             and (incluir_publicados or f"{pasta.name}/{r['arquivo']}" not in publicados)]
+    if fonte:
+        alterar_cortes_json(pasta, lambda lista: [x.setdefault("fonte", fonte) for x in lista if not x.get("fonte")])
+    if not alvos:
+        return 0
+    log(f"{len(alvos)} cortes sem hashtags/tags em '{pasta.name}': pedindo para a IA completar...")
+    sistema = (
+        "Você escreve a legenda de YouTube Shorts de um canal de cortes de lives de jogos, em português do Brasil. "
+        "Para cada corte: 'descricao' com 1 ou 2 frases que deem vontade de assistir (fiéis ao que acontece), "
+        "seguidas de 3 a 5 hashtags relevantes (o jogo, o streamer, o tema do momento; sem #shorts); "
+        "'tags' com 5 a 10 termos de busca do YouTube, sem #. Devolva um item para cada 'arquivo' recebido, "
+        "copiando o nome do arquivo exatamente. Se o link da live mostrar quem é o streamer, inclua o nome dele "
+        "como hashtag (ex.: #alanzoka para twitch.tv/alanzoka) e como tag."
+    )
+    feitos = 0
+    for i in range(0, len(alvos), 15):
+        lote = alvos[i:i + 15]
+        itens = []
+        for r in lote:
+            fala = r.get("fala") or (aprendizado._fala_do_cache(pasta, r) if aprendizado else "")
+            itens.append({"arquivo": r["arquivo"], "titulo": r.get("titulo", ""), "live": r.get("fonte") or fonte,
+                          "descricao_atual": r.get("descricao", ""), "fala": fala[:600]})
+        conteudo = "Cortes:\n" + json.dumps(itens, ensure_ascii=False, indent=1)
+        resp = perguntar_ia(sistema, conteudo, op, log, SCHEMA_LEGENDAS, FORMATO_LEGENDAS,
+                            f"escrever legendas e hashtags ({len(lote)} cortes)")
+        novos = {x["arquivo"]: x for x in resp.get("itens", []) if x.get("arquivo")}
+
+        def aplicar(lista):
+            for x in lista:
+                n = novos.get(x["arquivo"])
+                if n and n.get("descricao", "").strip():
+                    x["descricao"] = n["descricao"].strip()
+                    x["tags"] = [t.strip() for t in n.get("tags", []) if t.strip()][:15]
+
+        alterar_cortes_json(pasta, aplicar)
+        feitos += sum(1 for r in lote if r["arquivo"] in novos)
+    # arquivo de legendas para copiar e colar, refeito com os textos novos
+    final = json.loads((pasta / "cortes.json").read_text(encoding="utf-8"))
+    with open(pasta / "legendas_dos_posts.txt", "w", encoding="utf-8") as f:
+        for r in final:
+            f.write(f"{r['arquivo']}\n{r['titulo']}\n{r['descricao']}\n\n")
+    log(f"Legendas completadas: {feitos} cortes.")
+    return feitos
+
+
 def checar_caminho() -> None:
     """O Windows limita caminhos a 260 caracteres; avisa antes de perder tempo transcrevendo."""
     if os.name == "nt" and len(str(PASTA_APP)) > 120:

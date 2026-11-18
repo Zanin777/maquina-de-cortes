@@ -239,8 +239,13 @@ class App(tk.Tk):
 
         def trabalho():
             try:
-                publicador.publicar_pasta(Path(pasta), op.yt_modo, op.yt_intervalo_min, op.yt_nota_min,
-                                          lambda m: self.fila.put(("log", m)))
+                log = lambda m: self.fila.put(("log", m))
+                for p in publicador.pastas_de_cortes(Path(pasta)):
+                    try:
+                        motor.completar_legendas(p, op, log)
+                    except Exception as e:
+                        log(f"  (não consegui completar as legendas de '{p.name}': {e})")
+                publicador.publicar_pasta(Path(pasta), op.yt_modo, op.yt_intervalo_min, op.yt_nota_min, log)
             except Exception as e:
                 self.fila.put(("log", f"Erro ao publicar: {e}"))
             self.fila.put(("fim_yt", None))
