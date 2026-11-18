@@ -13,6 +13,7 @@ import statistics
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -139,7 +140,8 @@ def obter_video(fonte: str, log: Log) -> Path:
 # 2. Transcrever
 # ----------------------------------------------------------------------------
 def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
-    cache = video.with_suffix(f".transcricao-{op.modelo_whisper}.json")
+    # o tamanho entra no nome: blocos de live diferentes nunca reaproveitam a transcrição errada
+    cache = video.with_suffix(f".transcricao-{op.modelo_whisper}-{video.stat().st_size}.json")
     if cache.exists():
         log("Usando transcrição já salva (cache).")
         return json.loads(cache.read_text(encoding="utf-8"))
@@ -158,7 +160,9 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
     del bruto
     log("Transcrevendo... (isso é a parte mais demorada)")
     segs, info = modelo.transcribe(
-        audio, language=op.idioma or None, word_timestamps=True, vad_filter=True,
+        # sem filtro de voz: em live de jogo ele descartava a fala do streamer junto com o som do jogo
+        audio, language=op.idioma or None, word_timestamps=True, vad_filter=False,
+        condition_on_previous_text=False,
     )
     resultado = []
     total = info.duration or 1
@@ -573,8 +577,9 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
                       entrada_teste: list[str] | None = None) -> Path:
     titulo = _nome_arquivo(re.sub(r"\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "", info.get("title") or "live"))
     titulo = titulo[:40].rstrip(". ")
-    pasta = PASTA_SAIDA / f"{titulo} (ao vivo)"
-    pasta_blocos = PASTA_DOWNLOADS / f"live-{titulo[:25].rstrip('. ')}"
+    inicio_live = time.strftime("%d-%m %Hh%M")
+    pasta = PASTA_SAIDA / f"{titulo} (ao vivo {inicio_live})"
+    pasta_blocos = PASTA_DOWNLOADS / f"live-{inicio_live.replace(' ', '_')}"
     pasta_blocos.mkdir(parents=True, exist_ok=True)
     log(f"🔴 Live detectada: {info.get('title')}")
     log(f"Cada {op.bloco_min} min de live vira um bloco; os cortes de cada bloco saem assim que ele fecha.")
@@ -616,6 +621,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
             log(f"— Bloco {n_bloco} fechado ({dur / 60:.0f} min). Cortando...")
             try:
                 total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n_bloco:02d}-")
+                bloco.unlink(missing_ok=True)  # bloco já cortado: libera espaço (~3 GB por hora de live)
             except Exception as e:
                 log(f"  Erro no bloco {n_bloco}: {e}")
             log(f"— Bloco {n_bloco} pronto. Total até agora: {total} cortes em {pasta}")
