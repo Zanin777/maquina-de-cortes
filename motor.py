@@ -258,9 +258,13 @@ def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
         f"{sistema}\n\nResponda SOMENTE com um JSON válido, sem texto antes ou depois, neste formato:\n"
         '{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", "descricao": "...", "nota": 8}]}'
     )
+    # ambiente limpo: garante que ele use o seu login, e não variáveis de outro programa
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("CLAUDE") or k.startswith("ANTHROPIC"))}
     r = subprocess.run(
         [exe, "-p", instrucao, "--output-format", "json"],
-        input=conteudo, capture_output=True, text=True, encoding="utf-8", timeout=900,
+        input=conteudo, capture_output=True, text=True, encoding="utf-8", timeout=900, env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if r.returncode != 0:
         raise RuntimeError(f"O Claude Code falhou (está logado? rode 'claude' uma vez):\n{(r.stderr or r.stdout)[-800:]}")
