@@ -420,6 +420,8 @@ def autoteste(arquivo: str | None) -> None:
         from googleapiclient.discovery import build
         build("youtube", "v3", developerKey="teste", cache_discovery=False)
         linhas.append("youtube api ok")
+        import aprendizado, publicador as _p
+        linhas.append(f"aprendizado ok | prompt: {len(aprendizado.texto_para_prompt())} chars | publicados: {len(_p.publicados())}")
         modelo = WhisperModel("tiny", device="cpu", compute_type="int8")
         if arquivo:
             bruto = motor._run([motor.achar_exe("ffmpeg"), "-v", "error", "-i", arquivo, "-ac", "1", "-ar", "16000",
