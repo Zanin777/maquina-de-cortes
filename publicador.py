@@ -20,6 +20,7 @@ ESCOPOS = ["https://www.googleapis.com/auth/youtube.upload",
 ARQ_CLIENTE = motor.PASTA_APP / "youtube_cliente.json"   # credencial do app (baixada do Google Cloud)
 ARQ_TOKEN = motor.PASTA_APP / "youtube_token.json"       # autorização da conta (criada no login)
 ARQ_AGENDA = motor.PASTA_APP / "youtube_agenda.json"     # último horário agendado
+ARQ_PUBLICADOS = motor.PASTA_APP / "youtube_publicados.json"  # tudo que já foi pro YouTube (fonte da verdade)
 CATEGORIA_JOGOS = "20"
 
 
@@ -158,11 +159,82 @@ def publicar(video: Path, titulo: str, descricao: str, modo: str, intervalo_min:
     return f"https://youtube.com/shorts/{resposta['id']}"
 
 
+def _chave(video: Path) -> str:
+    return f"{video.parent.name}/{video.name}"
+
+
+def publicados() -> dict:
+    """{'pasta/arquivo.mp4': {'titulo', 'link', 'data'}} — não depende do cortes.json."""
+    if ARQ_PUBLICADOS.exists():
+        try:
+            return json.loads(ARQ_PUBLICADOS.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def registrar(video: Path, titulo: str, link: str) -> None:
+    dados = publicados()
+    dados[_chave(video)] = {"titulo": titulo, "link": link, "data": datetime.now().isoformat(timespec="seconds")}
+    tmp = ARQ_PUBLICADOS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(ARQ_PUBLICADOS)
+
+
+def ja_publicado(video: Path, titulo: str = "") -> str | None:
+    """Link do Short se esse corte já foi publicado (pelo arquivo ou, por segurança, pelo mesmo título)."""
+    dados = publicados()
+    if _chave(video) in dados:
+        return dados[_chave(video)]["link"]
+    for v in dados.values():
+        if titulo and v.get("titulo") == titulo:
+            return v["link"]
+    return None
+
+
+def recuperar_do_canal(log: Log) -> int:
+    """Lê os vídeos do canal e registra os cortes que já estão lá (casando pelo título)."""
+    servico = _servico()
+    canal = servico.channels().list(part="contentDetails", mine=True).execute()["items"][0]
+    uploads = canal["contentDetails"]["relatedPlaylists"]["uploads"]
+    no_canal, pagina = {}, None
+    while True:
+        resp = servico.playlistItems().list(part="snippet", playlistId=uploads, maxResults=50,
+                                            pageToken=pagina).execute()
+        for it in resp.get("items", []):
+            t = it["snippet"]["title"].replace(" #shorts", "").strip()
+            no_canal[t] = f"https://youtube.com/shorts/{it['snippet']['resourceId']['videoId']}"
+        pagina = resp.get("nextPageToken")
+        if not pagina:
+            break
+    achados = 0
+    for arq in motor.PASTA_SAIDA.glob("*/cortes.json"):
+        for r in json.loads(arq.read_text(encoding="utf-8")):
+            titulo = r.get("titulo", "").replace("<", "").replace(">", "").strip()
+            link = no_canal.get(titulo) or no_canal.get(titulo[:91].strip())
+            if link and not ja_publicado(arq.parent / r["arquivo"]):
+                registrar(arq.parent / r["arquivo"], r["titulo"], link)
+                achados += 1
+    log(f"{len(no_canal)} vídeos no canal; {achados} cortes reconhecidos e registrados como já publicados.")
+    return achados
+
+
 def pastas_de_cortes(pasta: Path) -> list[Path]:
     """A pasta escolhida, ou as subpastas dela que têm cortes (quando escolhem a pasta 'cortes' inteira)."""
     if (pasta / "cortes.json").exists():
         return [pasta]
     return sorted(p.parent for p in pasta.glob("*/cortes.json"))
+
+
+def _fonte_da_pasta(pasta: Path) -> str:
+    """Crédito da live para cortes antigos sem 'fonte': usa o de outro corte da mesma pasta."""
+    try:
+        for x in json.loads((pasta / "cortes.json").read_text(encoding="utf-8")):
+            if x.get("fonte"):
+                return x["fonte"]
+    except Exception:
+        pass
+    return ""
 
 
 def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, log: Log) -> int:
@@ -171,33 +243,41 @@ def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, 
     for p in pastas_de_cortes(pasta):
         dados = json.loads((p / "cortes.json").read_text(encoding="utf-8"))
         for i, r in enumerate(dados):
-            if r.get("youtube") or not (p / r["arquivo"]).exists():
+            if r.get("youtube") or ja_publicado(p / r["arquivo"], r.get("titulo", "")) \
+                    or not (p / r["arquivo"]).exists():
                 continue
             if r.get("nota", 0) < nota_min:
                 continue
-            pendentes.append((r.get("nota", 0), p, i))
+            pendentes.append((r.get("nota", 0), p, r["arquivo"]))
     if not pendentes:
         log("Nenhum corte novo para publicar nessa pasta (ou todos abaixo da nota mínima).")
         return 0
     pendentes.sort(key=lambda x: -x[0])
     log(f"{len(pendentes)} cortes para publicar ({modo}" + (f", 1 a cada {intervalo_min:g} min)" if modo == "agendado" else ")"))
     feitos = 0
-    for n, (nota, p, i) in enumerate(pendentes, 1):
-        arq_json = p / "cortes.json"
-        dados = json.loads(arq_json.read_text(encoding="utf-8"))
-        r = dados[i]
+    for n, (nota, p, arquivo) in enumerate(pendentes, 1):
+        dados = json.loads((p / "cortes.json").read_text(encoding="utf-8"))
+        r = next((x for x in dados if x["arquivo"] == arquivo), None)
+        if r is None or ja_publicado(p / arquivo, r.get("titulo", "")):
+            continue
         log(f"[{n}/{len(pendentes)}] nota {nota} — {r['titulo']}")
         try:
-            r["youtube"] = publicar(p / r["arquivo"], r["titulo"], r.get("descricao", ""), modo, intervalo_min, log,
-                                    tags=r.get("tags"), fonte=r.get("fonte", ""))
+            link = publicar(p / r["arquivo"], r["titulo"], r.get("descricao", ""), modo, intervalo_min, log,
+                            tags=r.get("tags"), fonte=r.get("fonte", "") or _fonte_da_pasta(p))
         except Exception as e:
             log(f"  ⚠ Erro: {e}")
             if "quota" in str(e).lower() or "uploadLimitExceeded" in str(e):
                 log("  Limite diário do YouTube atingido — o resto fica para amanhã (é só clicar de novo).")
                 break
             continue
-        arq_json.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
-        log(f"  ✅ {r['youtube']}")
+        registrar(p / arquivo, r["titulo"], link)
+
+        def marcar(lista, arquivo=arquivo, link=link):
+            for x in lista:
+                if x["arquivo"] == arquivo:
+                    x["youtube"] = link
+        motor.alterar_cortes_json(p, marcar)
+        log(f"  ✅ {link}")
         feitos += 1
     log(f"Pronto: {feitos} cortes enviados ao YouTube.")
     return feitos

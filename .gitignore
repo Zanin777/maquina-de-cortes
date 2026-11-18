@@ -5,6 +5,8 @@ registro.txt
 youtube_*.json
 client_secret*.json
 autoteste.txt
+desempenho.json
+licoes_do_canal.json
 
 # Vídeos baixados e cortes gerados
 downloads/
@@ -20,3 +22,6 @@ __pycache__/
 build/
 dist/
 *.spec
+youtube_publicados.json
+.cortes.lock
+*.json.tmp

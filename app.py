@@ -136,6 +136,7 @@ class App(tk.Tk):
         self.bt_pasta = ttk.Button(bts, text="Abrir pasta dos cortes", command=self.abrir_pasta)
         self.bt_pasta.pack(side="left")
         ttk.Button(bts, text="▲  Publicar cortes já feitos...", command=self.publicar_feitos).pack(side="left", padx=10)
+        ttk.Button(bts, text="🧠 Aprender com o canal", command=self.aprender_canal).pack(side="left")
         self.parar = threading.Event()
         self.barra = ttk.Progressbar(bts, mode="indeterminate", length=200)
         self.barra.pack(side="right", padx=10)
@@ -199,6 +200,25 @@ class App(tk.Tk):
         )
 
     # ---------------- YouTube ----------------
+    def aprender_canal(self):
+        if not publicador.conectado():
+            messagebox.showwarning("YouTube", "Conecte sua conta do YouTube primeiro (botão 'Conectar YouTube...').")
+            return
+        op = self.opcoes()
+        self.barra.start(12)
+        self.log("-" * 60)
+        self.log("Aprendendo com o desempenho dos seus Shorts...")
+
+        def trabalho():
+            try:
+                import aprendizado
+                aprendizado.aprender(op, lambda m: self.fila.put(("log", m)))
+            except Exception as e:
+                self.fila.put(("log", f"Erro ao aprender com o canal: {e}"))
+            self.fila.put(("fim_yt", None))
+
+        threading.Thread(target=trabalho, daemon=True).start()
+
     def publicar_feitos(self):
         if not publicador.conectado():
             messagebox.showwarning("YouTube", "Conecte sua conta do YouTube primeiro (botão 'Conectar YouTube...').")

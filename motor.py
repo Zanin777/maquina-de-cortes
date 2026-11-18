@@ -261,18 +261,32 @@ def _fmt(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:04.1f}" if h else f"{m:02d}:{s:04.1f}"
 
 
-def _ia_pela_api(sistema: str, conteudo: str, op: Opcoes, log: Log) -> dict:
+FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", '
+                  '"descricao": "... #hashtag #hashtag #hashtag", "nota": 8, "tags": ["termo", "termo"]}]}')
+
+
+def perguntar_ia(sistema: str, conteudo: str, op: Opcoes, log: Log, schema: dict, formato: str,
+                 tarefa: str) -> dict:
+    """Pergunta à IA e devolve JSON: pela API (se houver chave) ou pelo Claude Code (assinatura)."""
+    if op.api_key.strip() or os.environ.get("ANTHROPIC_API_KEY"):
+        return _ia_pela_api(sistema, conteudo, op, log, schema, tarefa)
+    return _ia_pelo_claude_code(sistema, conteudo, log, formato, tarefa)
+
+
+def _ia_pela_api(sistema: str, conteudo: str, op: Opcoes, log: Log, schema: dict | None = None,
+                 tarefa: str = "escolher os melhores momentos") -> dict:
     """Usa a API da Anthropic (chave do console.anthropic.com, cobrança por uso)."""
     import anthropic
 
-    log(f"Pedindo para a IA ({MODELO_CLAUDE}, via API) escolher os melhores momentos...")
+    schema = schema or SCHEMA_CORTES
+    log(f"Pedindo para a IA ({MODELO_CLAUDE}, via API) {tarefa}...")
     cliente = anthropic.Anthropic(api_key=op.api_key.strip() or None)
     resp = cliente.beta.messages.create(
         model=MODELO_CLAUDE,
         max_tokens=16000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_CORTES}},
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}},
         system=sistema,
         messages=[{"role": "user", "content": conteudo}],
     )
@@ -294,7 +308,8 @@ def achar_claude_code() -> str | None:
     return str(copias[-1]) if copias else None
 
 
-def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
+def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log, formato: str = FORMATO_CORTES,
+                         tarefa: str = "escolher os melhores momentos") -> dict:
     """Usa o Claude Code logado na sua assinatura (Pro/Max), sem chave de API."""
     exe = achar_claude_code()
     if not exe:
@@ -303,11 +318,9 @@ def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
             "Coloque uma chave da API, ou instale o Claude Code e faça login com sua conta Pro "
             "(veja o README)."
         )
-    log("Pedindo para o Claude (pela sua assinatura, via Claude Code) escolher os melhores momentos...")
+    log(f"Pedindo para o Claude (pela sua assinatura, via Claude Code) {tarefa}...")
     instrucao = (
-        f"{sistema}\n\nResponda SOMENTE com um JSON válido, sem texto antes ou depois, neste formato:\n"
-        '{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", "descricao": "... #hashtag #hashtag #hashtag", '
-        '"nota": 8, "tags": ["termo", "termo"]}]}'
+        f"{sistema}\n\nResponda SOMENTE com um JSON válido, sem texto antes ou depois, neste formato:\n{formato}"
     )
     # ambiente limpo: garante que ele use o seu login, e não variáveis de outro programa
     env = {k: v for k, v in os.environ.items()
@@ -326,6 +339,14 @@ def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
     return json.loads(achado.group(0))
 
 
+def _licoes_do_canal() -> str:
+    try:
+        import aprendizado
+        return aprendizado.texto_para_prompt()
+    except Exception:
+        return ""
+
+
 def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
     if not segmentos:
         raise RuntimeError("A transcrição veio vazia — o vídeo tem fala?")
@@ -339,8 +360,22 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
         "e escolhe os trechos com maior potencial de prender a atenção: histórias completas, opiniões fortes, "
         "humor, revelações, conselhos práticos, momentos polêmicos ou emocionantes. "
         "Cada corte precisa fazer sentido sozinho para quem não viu o vídeo: começa num gancho forte "
-        "(sem começar no meio de uma frase) e termina quando a ideia fecha. Cortes não podem se sobrepor."
+        "(sem começar no meio de uma frase) e termina quando a ideia fecha. Cortes não podem se sobrepor.\n\n"
+        "O que faz um Short performar (use como critério):\n"
+        "- Os 2 primeiros segundos decidem tudo: comece na frase mais intrigante, engraçada ou surpreendente, "
+        "não na preparação. Evite começar com 'então', 'bom', silêncio ou explicação.\n"
+        "- Um momento só por corte, com começo, clímax e fim; termine logo depois da punchline ou da reação, "
+        "sem 'rabo' depois do ponto alto.\n"
+        "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
+        "rendem mais que conversa morna ou leitura de chat.\n"
+        "- Prefira cortes mais curtos e densos a cortes longos com partes paradas.\n"
+        "- Título: até ~60 caracteres, curioso e fiel ao que acontece (sem mentir), em linguagem de internet; "
+        "pode usar 1 emoji. Não comece com o nome do jogo.\n"
+        "- 'nota' é sua aposta honesta de desempenho (1-10); reserve 9-10 para momentos realmente fortes."
     )
+    licoes = _licoes_do_canal()
+    if licoes:
+        sistema += "\n\n" + licoes
     pedido = (
         f"Escolha até {op.qtd_cortes} cortes, cada um entre {op.dur_min} e {op.dur_max} segundos. "
         "Use os segundos dos colchetes para 'inicio' e 'fim'. Escreva título e descrição em português do Brasil. "
@@ -353,10 +388,7 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
         pedido += f"\n\nInstruções extras do usuário: {op.instrucoes_extras.strip()}"
 
     conteudo = f"<transcricao>\n{transcricao}\n</transcricao>\n\n{pedido}"
-    if op.api_key.strip() or os.environ.get("ANTHROPIC_API_KEY"):
-        dados = _ia_pela_api(sistema, conteudo, op, log)
-    else:
-        dados = _ia_pelo_claude_code(sistema, conteudo, log)
+    dados = perguntar_ia(sistema, conteudo, op, log, SCHEMA_CORTES, FORMATO_CORTES, "escolher os melhores momentos")
 
     # todas as palavras com tempo, para alinhar os cortes certinho
     palavras = [Palavra(w["inicio"], w["fim"], w["texto"]) for s in segmentos for w in s["palavras"]]
@@ -705,6 +737,33 @@ def _nome_arquivo(txt: str) -> str:
     return (txt[:60] or "corte").rstrip(". ")
 
 
+def alterar_cortes_json(pasta: Path, mudanca: Callable[[list], None]) -> list:
+    """Relê o cortes.json, aplica a mudança e grava (com trava), para duas janelas não apagarem o trabalho uma da outra."""
+    arq = pasta / "cortes.json"
+    trava = pasta / ".cortes.lock"
+    for _ in range(200):
+        try:
+            fd = os.open(str(trava), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.time() - trava.stat().st_mtime > 30:  # trava esquecida
+                trava.unlink(missing_ok=True)
+            time.sleep(0.05)
+    else:
+        fd = None
+    try:
+        dados = json.loads(arq.read_text(encoding="utf-8")) if arq.exists() else []
+        mudanca(dados)
+        tmp = arq.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, arq)
+        return dados
+    finally:
+        if fd is not None:
+            os.close(fd)
+            trava.unlink(missing_ok=True)
+
+
 def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "") -> int:
     """Transcreve, escolhe e edita os cortes de um arquivo. Retorna quantos cortes saíram."""
     segmentos = transcrever(video, op, log)
@@ -713,13 +772,12 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
         return 0
     cortes = escolher_cortes(segmentos, op, log)
     pasta.mkdir(parents=True, exist_ok=True)
-    arq_json = pasta / "cortes.json"
-    resumo = json.loads(arq_json.read_text(encoding="utf-8")) if arq_json.exists() else []
     for i, c in enumerate(cortes, 1):
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
         log(f"Editando corte {i}/{len(cortes)}: {c.titulo}")
         renderizar(video, c, pasta / nome, op, log)
         r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao, "tags": c.tags, "fonte": fonte,
+             "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(c.fim - c.inicio, 1),
              "nota": c.nota, "origem": video.name, "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
         if op.publicar_youtube:
             if c.nota >= op.yt_nota_min:
@@ -729,13 +787,13 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
                     r["youtube"] = publicador.publicar(pasta / nome, c.titulo, c.descricao,
                                                        op.yt_modo, op.yt_intervalo_min, log,
                                                        tags=c.tags, fonte=fonte)
+                    publicador.registrar(pasta / nome, c.titulo, r["youtube"])
                     log(f"  ✅ No YouTube: {r['youtube']}")
                 except Exception as e:
                     log(f"  ⚠ Não consegui publicar no YouTube: {e}")
             else:
                 log(f"  (nota {c.nota} abaixo da mínima {op.yt_nota_min}: não publicado)")
-        resumo.append(r)
-        arq_json.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+        alterar_cortes_json(pasta, lambda dados: dados.append(r))
         with open(pasta / "legendas_dos_posts.txt", "a", encoding="utf-8") as f:
             f.write(f"{r['arquivo']}\n{r['titulo']}\n{r['descricao']}\n\n")
     return len(cortes)
@@ -751,9 +809,27 @@ def checar_caminho() -> None:
         )
 
 
+def _aprender_se_preciso(op: Opcoes, log: Log) -> None:
+    """Atualiza as lições do canal no máximo a cada 12 h (só com o YouTube conectado)."""
+    try:
+        import aprendizado
+        import publicador
+        if not publicador.conectado():
+            return
+        arq = aprendizado.ARQ_LICOES
+        if arq.exists() and time.time() - arq.stat().st_mtime < 12 * 3600:
+            return
+        log("Atualizando o que a IA aprendeu com o seu canal...")
+        aprendizado.atualizar_desempenho(log)
+        aprendizado.gerar_licoes(op, log)
+    except Exception as e:
+        log(f"  (não consegui atualizar as lições do canal: {e})")
+
+
 def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = None) -> Path:
     checar_caminho()
     achar_exe("ffmpeg")
+    _aprender_se_preciso(op, log)
     parar = parar or threading.Event()
     if eh_link(fonte):
         info = info_do_link(fonte)

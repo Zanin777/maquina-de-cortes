@@ -14,6 +14,7 @@ if not exist "%VENV%\Scripts\python.exe" (
   --collect-data cv2 ^
   --collect-data googleapiclient ^
   --hidden-import publicador ^
+  --hidden-import aprendizado ^
   --collect-submodules yt_dlp ^
   --add-binary "C:\Windows\System32\msvcp140.dll;." ^
   --add-binary "C:\Windows\System32\vcruntime140.dll;." ^
