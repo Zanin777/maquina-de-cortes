@@ -12,6 +12,7 @@ import shutil
 import statistics
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -41,6 +42,7 @@ class Opcoes:
     titulo: bool = True
     api_key: str = ""
     instrucoes_extras: str = ""
+    bloco_min: int = 30  # live ao vivo: de quanto em quanto tempo sai uma leva de cortes
 
 
 @dataclass
@@ -209,9 +211,62 @@ def _fmt(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:04.1f}" if h else f"{m:02d}:{s:04.1f}"
 
 
-def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
+def _ia_pela_api(sistema: str, conteudo: str, op: Opcoes, log: Log) -> dict:
+    """Usa a API da Anthropic (chave do console.anthropic.com, cobrança por uso)."""
     import anthropic
 
+    log(f"Pedindo para a IA ({MODELO_CLAUDE}, via API) escolher os melhores momentos...")
+    cliente = anthropic.Anthropic(api_key=op.api_key.strip() or None)
+    resp = cliente.beta.messages.create(
+        model=MODELO_CLAUDE,
+        max_tokens=16000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_CORTES}},
+        system=sistema,
+        messages=[{"role": "user", "content": conteudo}],
+    )
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("A IA recusou analisar este vídeo.")
+    return json.loads("".join(b.text for b in resp.content if b.type == "text"))
+
+
+def achar_claude_code() -> str | None:
+    achado = shutil.which("claude")
+    if achado:
+        return achado
+    local = Path.home() / ".local" / "bin" / "claude.exe"
+    return str(local) if local.exists() else None
+
+
+def _ia_pelo_claude_code(sistema: str, conteudo: str, log: Log) -> dict:
+    """Usa o Claude Code logado na sua assinatura (Pro/Max), sem chave de API."""
+    exe = achar_claude_code()
+    if not exe:
+        raise RuntimeError(
+            "Sem chave de API e sem Claude Code instalado.\n"
+            "Coloque uma chave da API, ou instale o Claude Code e faça login com sua conta Pro "
+            "(veja o README)."
+        )
+    log("Pedindo para o Claude (pela sua assinatura, via Claude Code) escolher os melhores momentos...")
+    instrucao = (
+        f"{sistema}\n\nResponda SOMENTE com um JSON válido, sem texto antes ou depois, neste formato:\n"
+        '{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", "descricao": "...", "nota": 8}]}'
+    )
+    r = subprocess.run(
+        [exe, "-p", instrucao, "--output-format", "json"],
+        input=conteudo, capture_output=True, text=True, encoding="utf-8", timeout=900,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"O Claude Code falhou (está logado? rode 'claude' uma vez):\n{(r.stderr or r.stdout)[-800:]}")
+    resposta = json.loads(r.stdout).get("result", "")
+    achado = re.search(r"\{.*\}", resposta, re.S)
+    if not achado:
+        raise RuntimeError(f"Resposta inesperada do Claude Code:\n{resposta[:500]}")
+    return json.loads(achado.group(0))
+
+
+def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
     if not segmentos:
         raise RuntimeError("A transcrição veio vazia — o vídeo tem fala?")
 
@@ -234,24 +289,11 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
     if op.instrucoes_extras.strip():
         pedido += f"\n\nInstruções extras do usuário: {op.instrucoes_extras.strip()}"
 
-    log(f"Pedindo para a IA ({MODELO_CLAUDE}) escolher os melhores momentos...")
-    cliente = anthropic.Anthropic(api_key=op.api_key.strip() or None)
-    resp = cliente.beta.messages.create(
-        model=MODELO_CLAUDE,
-        max_tokens=16000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA_CORTES}},
-        system=sistema,
-        messages=[{
-            "role": "user",
-            "content": f"<transcricao>\n{transcricao}\n</transcricao>\n\n{pedido}",
-        }],
-    )
-    if resp.stop_reason == "refusal":
-        raise RuntimeError("A IA recusou analisar este vídeo.")
-    texto = "".join(b.text for b in resp.content if b.type == "text")
-    dados = json.loads(texto)
+    conteudo = f"<transcricao>\n{transcricao}\n</transcricao>\n\n{pedido}"
+    if op.api_key.strip() or os.environ.get("ANTHROPIC_API_KEY"):
+        dados = _ia_pela_api(sistema, conteudo, op, log)
+    else:
+        dados = _ia_pelo_claude_code(sistema, conteudo, log)
 
     # todas as palavras com tempo, para alinhar os cortes certinho
     palavras = [Palavra(w["inicio"], w["fim"], w["texto"]) for s in segmentos for w in s["palavras"]]
@@ -429,26 +471,154 @@ def _nome_arquivo(txt: str) -> str:
     return (txt[:60] or "corte").rstrip(". ")
 
 
-def processar(fonte: str, op: Opcoes, log: Log) -> Path:
-    achar_exe("ffmpeg")
-    video = obter_video(fonte, log)
+def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "") -> int:
+    """Transcreve, escolhe e edita os cortes de um arquivo. Retorna quantos cortes saíram."""
     segmentos = transcrever(video, op, log)
+    if not segmentos:
+        log("  (sem fala neste trecho, pulando)")
+        return 0
     cortes = escolher_cortes(segmentos, op, log)
-    if not cortes:
-        raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")
-
-    pasta = PASTA_SAIDA / _nome_arquivo(video.stem)
     pasta.mkdir(parents=True, exist_ok=True)
-    resumo = []
+    arq_json = pasta / "cortes.json"
+    resumo = json.loads(arq_json.read_text(encoding="utf-8")) if arq_json.exists() else []
     for i, c in enumerate(cortes, 1):
-        nome = f"{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
+        nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
         log(f"Editando corte {i}/{len(cortes)}: {c.titulo}")
         renderizar(video, c, pasta / nome, op, log)
-        resumo.append({"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao,
-                       "nota": c.nota, "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)})
-    (pasta / "cortes.json").write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
-    with open(pasta / "legendas_dos_posts.txt", "w", encoding="utf-8") as f:
-        for r in resumo:
+        r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao,
+             "nota": c.nota, "origem": video.name, "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
+        resumo.append(r)
+        arq_json.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+        with open(pasta / "legendas_dos_posts.txt", "a", encoding="utf-8") as f:
             f.write(f"{r['arquivo']}\n{r['titulo']}\n{r['descricao']}\n\n")
-    log(f"Pronto! {len(cortes)} cortes salvos em: {pasta}")
+    return len(cortes)
+
+
+def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = None) -> Path:
+    achar_exe("ffmpeg")
+    parar = parar or threading.Event()
+    if eh_link(fonte):
+        info = info_do_link(fonte)
+        if info.get("is_live"):
+            return processar_ao_vivo(fonte, info, op, log, parar)
+    video = obter_video(fonte, log)
+    pasta = PASTA_SAIDA / _nome_arquivo(video.stem)
+    if (pasta / "legendas_dos_posts.txt").exists():
+        (pasta / "legendas_dos_posts.txt").unlink()
+        (pasta / "cortes.json").unlink(missing_ok=True)
+    n = cortar_video(video, pasta, op, log)
+    if not n:
+        raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")
+    log(f"Pronto! {n} cortes salvos em: {pasta}")
+    return pasta
+
+
+# ----------------------------------------------------------------------------
+# Live ao vivo: grava em blocos e corta cada bloco assim que ele fecha
+# ----------------------------------------------------------------------------
+def info_do_link(url: str, formato: str = "best") -> dict:
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True,
+                           "format": formato}) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def _duracao(arq: Path) -> float:
+    try:
+        saida = subprocess.run(
+            [achar_exe("ffprobe"), "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(arq)], capture_output=True, text=True,
+        ).stdout.strip()
+        return float(saida)
+    except Exception:
+        return 0.0
+
+
+def _iniciar_gravacao(url_live: str, pasta_blocos: Path, rodada: int, op: Opcoes, log: Log,
+                      entrada: list[str] | None = None) -> subprocess.Popen:
+    if entrada is None:
+        info = info_do_link(url_live, "best[height<=1080][protocol^=m3u8]/best[height<=1080]/best")
+        cabecalhos = "".join(f"{k}: {v}\r\n" for k, v in (info.get("http_headers") or {}).items())
+        entrada = (["-headers", cabecalhos] if cabecalhos else []) + ["-i", info["url"]]
+    cmd = [achar_exe("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", *entrada,
+           "-c", "copy", "-f", "segment", "-segment_time", str(op.bloco_min * 60),
+           "-reset_timestamps", "1", str(pasta_blocos / f"r{rodada:02d}_bloco_%03d.ts")]
+    log(f"Gravando a live em blocos de {op.bloco_min} min...")
+    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threading.Event,
+                      entrada_teste: list[str] | None = None) -> Path:
+    titulo = _nome_arquivo(re.sub(r"\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "", info.get("title") or "live"))
+    pasta = PASTA_SAIDA / f"{titulo} (ao vivo)"
+    pasta_blocos = PASTA_DOWNLOADS / f"{titulo} (ao vivo)"
+    pasta_blocos.mkdir(parents=True, exist_ok=True)
+    log(f"🔴 Live detectada: {info.get('title')}")
+    log(f"Cada {op.bloco_min} min de live vira um bloco; os cortes de cada bloco saem assim que ele fecha.")
+    log("Clique em 'Parar live' quando quiser encerrar (o último bloco ainda é cortado).")
+
+    rodada = 1
+    gravador = _iniciar_gravacao(url, pasta_blocos, rodada, op, log, entrada_teste)
+    feitos: set[str] = set()
+    total = 0
+    n_bloco = 0
+
+    def pendentes(gravando: bool) -> list[Path]:
+        arqs = sorted(pasta_blocos.glob("r*_bloco_*.ts"))
+        arqs = [a for a in arqs if a.name not in feitos]
+        if gravando:  # o arquivo mais novo da rodada atual ainda está sendo escrito
+            atuais = [a for a in arqs if a.name.startswith(f"r{rodada:02d}_")]
+            if atuais:
+                arqs.remove(atuais[-1])
+        return arqs
+
+    while True:
+        gravando = gravador.poll() is None
+        if parar.is_set() and gravando:
+            log("Parando a gravação...")
+            try:
+                gravador.stdin.write("q")
+                gravador.stdin.flush()
+                gravador.wait(timeout=20)
+            except Exception:
+                gravador.kill()
+            gravando = False
+
+        for bloco in pendentes(gravando):
+            feitos.add(bloco.name)
+            dur = _duracao(bloco)
+            if dur < 30:
+                continue
+            n_bloco += 1
+            log(f"— Bloco {n_bloco} fechado ({dur / 60:.0f} min). Cortando...")
+            try:
+                total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n_bloco:02d}-")
+            except Exception as e:
+                log(f"  Erro no bloco {n_bloco}: {e}")
+            log(f"— Bloco {n_bloco} pronto. Total até agora: {total} cortes em {pasta}")
+
+        if not gravando:
+            if parar.is_set() or entrada_teste is not None:
+                break
+            # a gravação caiu: a live acabou ou o link expirou
+            erro = (gravador.stderr.read() or "").strip() if gravador.stderr else ""
+            try:
+                ainda_ao_vivo = bool(info_do_link(url).get("is_live"))
+            except Exception:
+                ainda_ao_vivo = False
+            if not ainda_ao_vivo:
+                log("A live terminou.")
+                break
+            if erro:
+                log(f"  (conexão caiu: {erro[-200:]})")
+            log("Reconectando na live...")
+            rodada += 1
+            gravador = _iniciar_gravacao(url, pasta_blocos, rodada, op, log)
+            continue
+
+        parar.wait(5)
+
+    log(f"Pronto! {total} cortes da live salvos em: {pasta}")
     return pasta
