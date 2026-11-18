@@ -44,6 +44,8 @@ class Opcoes:
     api_key: str = ""
     instrucoes_extras: str = ""
     bloco_min: int = 30  # live ao vivo: de quanto em quanto tempo sai uma leva de cortes
+    layout: str = "streamer"  # "streamer" = webcam em cima e jogo embaixo; "normal" = um quadro só
+    cam_regiao: list | None = None  # webcam marcada à mão: [x, y, largura, altura] em frações do quadro
 
 
 @dataclass
@@ -334,15 +336,18 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
 # ----------------------------------------------------------------------------
 # 4. Edição
 # ----------------------------------------------------------------------------
-def centro_do_rosto(video: Path, ini: float, fim: float) -> float | None:
-    """Retorna a posição X (0 a 1) mediana do maior rosto no trecho."""
+CAM_H, GAME_H = 768, 1152  # layout streamer: webcam em cima (1080x768), jogo embaixo (1080x1152)
+
+
+def detectar_rosto(video: Path, ini: float, fim: float) -> tuple[float, float, float] | None:
+    """Mediana do maior rosto no trecho: (centro x, centro y, largura do rosto), em pixels do vídeo."""
     import cv2
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         return None
     detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    xs = []
+    achados = []
     amostras = 24
     for i in range(amostras):
         t = ini + (fim - ini) * (i + 0.5) / amostras
@@ -354,12 +359,43 @@ def centro_do_rosto(video: Path, ini: float, fim: float) -> float | None:
         escala = 640 / w
         peq = cv2.resize(frame, (640, int(h * escala)))
         cinza = cv2.cvtColor(peq, cv2.COLOR_BGR2GRAY)
-        rostos = detector.detectMultiScale(cinza, 1.1, 6, minSize=(40, 40))
+        rostos = detector.detectMultiScale(cinza, 1.1, 6, minSize=(30, 30))
         if len(rostos):
             x, y, rw, rh = max(rostos, key=lambda r: r[2] * r[3])
-            xs.append((x + rw / 2) / 640)
+            achados.append(((x + rw / 2) / escala, (y + rh / 2) / escala, rw / escala))
     cap.release()
-    return statistics.median(xs) if len(xs) >= 3 else None
+    if len(achados) < 3:
+        return None
+    return tuple(statistics.median(a[i] for a in achados) for i in range(3))
+
+
+def centro_do_rosto(video: Path, ini: float, fim: float) -> float | None:
+    """Posição X (0 a 1) do rosto, usada no layout normal."""
+    r = detectar_rosto(video, ini, fim)
+    if not r:
+        return None
+    vw, _ = dimensoes_video(video)
+    return r[0] / vw
+
+
+def capturar_quadro(fonte: str, destino: Path) -> Path:
+    """Salva uma imagem (960px de largura) de um vídeo ou link, para marcar a webcam."""
+    fonte = fonte.strip().strip('"')
+    if eh_link(fonte):
+        info = info_do_link(fonte, "best[height<=1080]/best")
+        cab = "".join(f"{k}: {v}\r\n" for k, v in (info.get("http_headers") or {}).items())
+        entrada = ["-headers", cab] if cab else []
+        if not info.get("is_live"):
+            entrada += ["-ss", "120"]
+        entrada += ["-i", info["url"]]
+    else:
+        dur = _duracao(Path(fonte))
+        entrada = ["-ss", f"{min(120.0, dur / 3):.1f}", "-i", fonte]
+    r = subprocess.run([achar_exe("ffmpeg"), "-v", "error", "-y", *entrada, "-frames:v", "1",
+                        "-vf", "scale=960:-2", str(destino)], capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 or not destino.exists():
+        raise RuntimeError(f"Não consegui pegar uma imagem do vídeo:\n{r.stderr[-500:]}")
+    return destino
 
 
 def _ass_tempo(t: float) -> str:
@@ -374,12 +410,70 @@ def _ass_esc(txt: str) -> str:
     return txt.replace("\\", "").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
-def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes) -> str:
+TAM_FAIXA = 62  # tamanho da letra do título na faixa vermelha
+
+
+def _quebrar(txt: str, max_chars: int = 24) -> list[str]:
+    """Quebra o título em linhas de tamanho parecido (evita uma palavra sozinha na última linha)."""
+    palavras = txt.split()
+    n = max(1, -(-len(txt) // max_chars))
+    while True:
+        alvo = len(txt) / n
+        linhas, atual = [], ""
+        for palavra in palavras:
+            if atual and len(atual) + 1 + len(palavra) > max(alvo + 4, 1) and len(linhas) < n - 1:
+                linhas.append(atual)
+                atual = palavra
+            else:
+                atual = f"{atual} {palavra}".strip()
+        linhas.append(atual)
+        if all(len(l) <= max_chars for l in linhas) or n >= 3:
+            return linhas[:3]
+        n += 1
+
+
+def _altura_faixa(titulo: str) -> int:
+    """Altura total da faixa do título (incluindo a sombra de 10px embaixo)."""
+    return len(_quebrar(titulo.upper())) * int(TAM_FAIXA * 1.18) + 2 * 24 + 10
+
+
+def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float) -> list[str]:
+    """Faixa vermelha na largura toda, com detalhe amarelo em cima, sombra vinho embaixo e texto branco."""
+    linhas_tit = _quebrar(titulo.upper())
+    alt = _altura_faixa(titulo) - 10
+    fim = _ass_tempo(dur)
+
+    def ret(y, h, cor_bgr, camada, extra=""):
+        return (f"Dialogue: {camada},{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+                f"{{\\an7\\pos(0,{y})\\1c&H{cor_bgr}&\\fad(150,0){extra}\\p1}}"
+                f"m 0 0 l {largura} 0 l {largura} {h} l 0 {h}{{\\p0}}")
+
+    texto = "\\N".join(_ass_esc(l) for l in linhas_tit)
+    return [
+        ret(y0 + alt, 10, "00006E", 2),            # sombra vinho embaixo
+        ret(y0, alt, "1C1CD9", 3),                 # faixa vermelha
+        ret(y0, 8, "00D2FF", 4),                   # detalhe amarelo em cima
+        ret(y0 + alt - 4, 4, "0E0E9A", 4),         # filete escuro na base
+        f"Dialogue: 5,{_ass_tempo(0)},{fim},TitV,,0,0,0,,"
+        f"{{\\an5\\pos({largura // 2},{y0 + alt // 2 + 3})\\fad(150,0)"
+        f"\\fscx80\\fscy80\\t(0,220,\\fscx100\\fscy100)}}{texto}",
+    ]
+
+
+def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: int | None = None,
+              titulo_vermelho: bool = False, margem_leg: int | None = None) -> str:
     dur = corte.fim - corte.inicio
     tam_leg = int(altura * 0.045) if altura > largura else int(altura * 0.07)
     tam_tit = int(altura * 0.032) if altura > largura else int(altura * 0.055)
-    margem_leg = int(altura * 0.28) if altura > largura else int(altura * 0.10)
-    margem_tit = int(altura * 0.10) if altura > largura else int(altura * 0.05)
+    if margem_leg is None:
+        margem_leg = int(altura * 0.28) if altura > largura else int(altura * 0.10)
+    if margem_tit is None:
+        margem_tit = int(altura * 0.10) if altura > largura else int(altura * 0.05)
+    # caixa do título: no estilo 3 do ASS a cor da caixa é a "OutlineColour" (formato &HAABBGGRR)
+    if titulo_vermelho:
+        cor_texto, cor_caixa = "&H00FFFFFF", "&H001A1AE0"  # texto branco, caixa vermelha
+    else:
+        cor_texto, cor_caixa = "&H00000000", "&H00FFFFFF"  # texto preto, caixa branca
 
     linhas = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {largura}", f"PlayResY: {altura}",
@@ -390,13 +484,19 @@ def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes) -> str:
         "Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Leg,Arial Black,{tam_leg},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
         f"-1,0,0,0,100,100,0,0,1,{max(4, tam_leg // 12)},2,2,60,60,{margem_leg},1",
-        f"Style: Tit,Arial,{tam_tit},&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,"
+        f"Style: Tit,Arial,{tam_tit},{cor_texto},{cor_texto},{cor_caixa},{cor_caixa},"
         f"-1,0,0,0,100,100,0,0,3,{max(10, tam_tit // 4)},0,8,90,90,{margem_tit},1",
+        f"Style: TitV,Arial Black,{TAM_FAIXA},&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,"
+        "-1,0,0,0,100,100,0,0,1,4,3,5,40,40,0,1",
+        "Style: Desenho,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
+        "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-    if op.titulo and corte.titulo:
+    if op.titulo and corte.titulo and titulo_vermelho:
+        linhas += _faixa_vermelha(corte.titulo, largura, margem_tit, dur)
+    elif op.titulo and corte.titulo:
         linhas.append(f"Dialogue: 1,{_ass_tempo(0)},{_ass_tempo(dur)},Tit,,0,0,0,,"
                       f"{{\\fad(250,0)}}{_ass_esc(corte.titulo.upper())}")
 
@@ -428,45 +528,118 @@ def _par(n: float) -> int:
     return int(n) // 2 * 2
 
 
+def _caixa_na_proporcao(cx: float, cy: float, w: float, h: float, prop: float,
+                        vw: int, vh: int) -> tuple[int, int, int, int]:
+    """Recorta (w,h) centrado em (cx,cy) na proporção largura/altura `prop`, sem sair do quadro."""
+    if w / h > prop:
+        w = h * prop
+    else:
+        h = w / prop
+    w, h = _par(min(w, vw)), _par(min(h, vh))
+    x = int(min(max(cx - w / 2, 0), vw - w))
+    y = int(min(max(cy - h / 2, 0), vh - h))
+    return w, h, x, y
+
+
+def _regiao_webcam(video: Path, corte: Corte, op: Opcoes, vw: int, vh: int, log: Log):
+    """Retorna a caixa (w,h,x,y) da webcam recortada e a faixa X (x0,x1) que a webcam ocupa no quadro."""
+    prop = 1080 / CAM_H
+    if op.cam_regiao:
+        rx, ry, rw, rh = op.cam_regiao
+        x0, y0, w, h = rx * vw, ry * vh, rw * vw, rh * vh
+        return _caixa_na_proporcao(x0 + w / 2, y0 + h / 2, w, h, prop, vw, vh), (x0, x0 + w)
+    rosto = detectar_rosto(video, corte.inicio, corte.fim)
+    if not rosto:
+        log("    (não achei a webcam, usando o layout normal)")
+        return None, None
+    cx, cy, fw = rosto
+    largura = fw * 1.8  # só o rosto: apertado para não pegar a borda da webcam nem alertas
+    caixa = _caixa_na_proporcao(cx, cy + fw * 0.05, largura, largura / prop, prop, vw, vh)
+    return caixa, (cx - fw * 2.2, cx + fw * 2.2)  # faixa aproximada da webcam inteira
+
+
+def _x_do_jogo(gw: int, vw: int, faixa_cam: tuple[float, float]) -> int:
+    """Escolhe o recorte do jogo que mostra o mínimo possível da webcam (empate: o do meio)."""
+    candidatos = [(vw - gw) // 2, 0, vw - gw]
+
+    def sobra(x):
+        return max(0.0, min(x + gw, faixa_cam[1]) - max(x, faixa_cam[0]))
+
+    return min(candidatos, key=lambda x: (round(sobra(x)), candidatos.index(x)))
+
+
 def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -> None:
     vw, vh = dimensoes_video(video)
     dur = corte.fim - corte.inicio
+    zoom = f"(1+0.10*t/{dur:.2f})"  # aproximação lenta de 10% ao longo do corte
+
+    def com_zoom(W, H):
+        return [f"scale=w='2*trunc({W}*{zoom}/2)':h='2*trunc({H}*{zoom}/2)':eval=frame", f"crop={W}:{H}"]
+
+    margem_tit = None
+    margem_leg = None
+    grafo = None
     filtros = []
 
-    if op.vertical:
-        W, H = 1080, 1920
-        if vw / vh > 9 / 16:  # vídeo mais largo que 9:16 -> recorta nas laterais
-            cw = _par(vh * 9 / 16)
-            cx = centro_do_rosto(video, corte.inicio, corte.fim)
-            if cx is None:
-                cx = 0.5
-                log("    (não achei rosto, usando o centro)")
-            x = int(min(max(cx * vw - cw / 2, 0), vw - cw))
-            filtros.append(f"crop={cw}:{vh}:{x}:0")
-        else:
-            ch = _par(vw * 16 / 9)
-            filtros.append(f"crop={vw}:{min(ch, vh)}:0:(ih-{min(ch, vh)})/2")
-        filtros.append(f"scale={W}:{H}")
-    else:
-        W = 1920 if vw >= vh else 1080
-        H = _par(W * vh / vw)
-        filtros.append(f"scale={W}:{H}")
+    if op.vertical and op.layout == "streamer" and vw > vh:
+        cam, faixa = _regiao_webcam(video, corte, op, vw, vh, log)
+        if cam:
+            W, H = 1080, CAM_H + GAME_H
+            cw, ch, cx, cy = cam
+            # jogo inteiro (16:9, sem cortar nada), centralizado logo abaixo da faixa do título,
+            # em cima de um fundo desfocado do próprio jogo
+            jogo_h = _par(1080 * vh / vw)
+            faixa_h = _altura_faixa(corte.titulo) if op.titulo and corte.titulo else 0
+            gy = faixa_h if faixa_h else (GAME_H - jogo_h) // 2
+            cam_zoom = ",".join(com_zoom(1080, CAM_H)) + "," if op.zoom else ""
+            grafo = (f"[0:v]split=3[a][b][c];"
+                     f"[a]crop={cw}:{ch}:{cx}:{cy},scale=1080:{CAM_H},{cam_zoom}setsar=1[cam];"
+                     f"[b]scale=1080:{GAME_H}:force_original_aspect_ratio=increase,crop=1080:{GAME_H},"
+                     f"boxblur=25:2,eq=brightness=-0.12,setsar=1[fundo];"
+                     f"[c]scale=1080:{jogo_h},setsar=1[jogo];"
+                     f"[fundo][jogo]overlay=0:{gy}[baixo];"
+                     f"[cam][baixo]vstack=inputs=2")
+            margem_tit = CAM_H  # faixa do título encostada embaixo da webcam
+            margem_leg = max(40, (GAME_H - gy - jogo_h) // 2 - 40)  # legenda no espaço embaixo do jogo
 
-    if op.zoom:
-        z = f"(1+0.10*t/{dur:.2f})"  # aproximação lenta de 10% ao longo do corte
-        filtros.append(f"scale=w='2*trunc({W}*{z}/2)':h='2*trunc({H}*{z}/2)':eval=frame")
-        filtros.append(f"crop={W}:{H}")
+    if grafo is None:
+        if op.vertical:
+            W, H = 1080, 1920
+            if vw / vh > 9 / 16:  # vídeo mais largo que 9:16 -> recorta nas laterais
+                cw = _par(vh * 9 / 16)
+                cx = centro_do_rosto(video, corte.inicio, corte.fim)
+                if cx is None:
+                    cx = 0.5
+                    log("    (não achei rosto, usando o centro)")
+                x = int(min(max(cx * vw - cw / 2, 0), vw - cw))
+                filtros.append(f"crop={cw}:{vh}:{x}:0")
+            else:
+                ch = _par(vw * 16 / 9)
+                filtros.append(f"crop={vw}:{min(ch, vh)}:0:(ih-{min(ch, vh)})/2")
+            filtros.append(f"scale={W}:{H}")
+        else:
+            W = 1920 if vw >= vh else 1080
+            H = _par(W * vh / vw)
+            filtros.append(f"scale={W}:{H}")
+        if op.zoom:
+            filtros += com_zoom(W, H)
 
     with tempfile.TemporaryDirectory() as tmp:
         if op.legendas or op.titulo:
-            Path(tmp, "leg.ass").write_text(gerar_ass(corte, W, H, op), encoding="utf-8")
+            ass = gerar_ass(corte, W, H, op, margem_tit, titulo_vermelho=grafo is not None, margem_leg=margem_leg)
+            Path(tmp, "leg.ass").write_text(ass, encoding="utf-8")
             filtros.append("subtitles=leg.ass")
         filtros.append("setsar=1")
 
+        if grafo:
+            video_args = ["-filter_complex", f"{grafo}[st];[st]{','.join(filtros)}[v]",
+                          "-map", "[v]", "-map", "0:a?"]
+        else:
+            video_args = ["-vf", ",".join(filtros)]
         cmd = [
             achar_exe("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{corte.inicio:.3f}", "-t", f"{dur:.3f}", "-i", str(video.resolve()),
-            "-vf", ",".join(filtros),
+            *video_args,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
             "-r", "30", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
             str(destino.resolve()),

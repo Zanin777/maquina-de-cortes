@@ -23,6 +23,16 @@ entrega cortes prontos para TikTok/Reels/Shorts.
 - **Chave de API:** crie em https://console.anthropic.com (cobrança separada, por uso) e cole na janela.
   Fica salva em `config.json`, que não vai pro GitHub.
 
+## Layout streamer (padrão)
+Para lives de jogo, cada corte sai assim:
+- **em cima:** só o rosto do streamer, recortado da webcam e centralizado;
+- **no meio:** o título numa faixa vermelha;
+- **embaixo:** o jogo inteiro (sem cortar nada), com fundo desfocado e a legenda no espaço que sobra.
+
+O rosto é achado sozinho. Se o recorte não ficar bom, clique em **Marcar webcam...**, arraste um
+retângulo em volta do rosto e salve — fica guardado para as próximas lives (o botão **Automática** desfaz).
+Para vídeos sem webcam, troque o layout para **Normal**.
+
 ## Live ao vivo
 Cole o link de uma live **que está acontecendo** (YouTube, Twitch...). O programa percebe que é ao vivo,
 grava em blocos (padrão: 30 min, ajuste em "Live: cortar a cada") e solta os cortes de cada bloco
