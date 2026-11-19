@@ -112,6 +112,17 @@ def instalar_ffmpeg(log: Log) -> None:
     log("FFmpeg instalado!")
 
 
+def _runtime_js() -> dict:
+    """O YouTube exige um runtime de JavaScript (Deno) para o yt-dlp ver todos os formatos.
+    Sem ele, só sobram formatos separados de vídeo e áudio e pedidos como "best" falham."""
+    deno = shutil.which("deno")
+    if not deno:
+        winget = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet"
+        candidatos = [winget / "Links" / "deno.exe", *winget.glob("Packages/DenoLand.Deno*/deno.exe")]
+        deno = next((str(c) for c in candidatos if c.exists()), None)
+    return {"js_runtimes": {"deno": {"path": deno}}} if deno else {}
+
+
 def achar_exe(nome: str) -> str:
     achado = shutil.which(nome)
     if achado:
@@ -174,6 +185,7 @@ def obter_video(fonte: str, log: Log) -> Path:
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [progresso],
+        **_runtime_js(),
     }
     with yt_dlp.YoutubeDL(opcoes) as ydl:
         info = ydl.extract_info(fonte, download=True)
@@ -487,7 +499,8 @@ def capturar_quadro(fonte: str, destino: Path) -> Path:
     """Salva uma imagem (960px de largura) de um vídeo ou link, para marcar a webcam."""
     fonte = fonte.strip().strip('"')
     if eh_link(fonte):
-        info = info_do_link(fonte, "best[height<=1080]/best")
+        # só precisa da imagem: se não houver vídeo+áudio num arquivo só, serve um formato só de vídeo
+        info = info_do_link(fonte, "best[height<=1080]/bv*[height<=1080]/best/bv*")
         cab = "".join(f"{k}: {v}\r\n" for k, v in (info.get("http_headers") or {}).items())
         entrada = ["-headers", cab] if cab else []
         if not info.get("is_live"):
@@ -991,11 +1004,12 @@ def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = 
 # ----------------------------------------------------------------------------
 # Live ao vivo: grava em blocos e corta cada bloco assim que ele fecha
 # ----------------------------------------------------------------------------
-def info_do_link(url: str, formato: str = "best") -> dict:
+def info_do_link(url: str, formato: str = "bv*+ba/b") -> dict:
+    # "bv*+ba/b" (e não "best"): funciona mesmo quando o YouTube não oferece vídeo+áudio num arquivo só
     import yt_dlp
 
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True,
-                           "format": formato}) as ydl:
+                           "format": formato, **_runtime_js()}) as ydl:
         return ydl.extract_info(url, download=False)
 
 
