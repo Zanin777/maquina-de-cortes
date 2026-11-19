@@ -529,6 +529,9 @@ def _ass_esc(txt: str) -> str:
 
 
 TAM_FAIXA = 62  # tamanho da letra do título na faixa vermelha
+# vídeo vertical: distância da base da legenda até o pé do vídeo, em fração da altura
+# (0.40 = a legenda fica um pouco abaixo do meio; aumente para subir, diminua para descer)
+ALTURA_LEGENDA = 0.40
 
 
 def _quebrar(txt: str, max_chars: int = 24) -> list[str]:
@@ -603,7 +606,7 @@ def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: i
     tam_leg = int(altura * 0.045) if altura > largura else int(altura * 0.07)
     tam_tit = int(altura * 0.032) if altura > largura else int(altura * 0.055)
     if margem_leg is None:
-        margem_leg = int(altura * 0.28) if altura > largura else int(altura * 0.10)
+        margem_leg = int(altura * ALTURA_LEGENDA) if altura > largura else int(altura * 0.10)
     if margem_tit is None:
         margem_tit = int(altura * 0.10) if altura > largura else int(altura * 0.05)
     # caixa do título: no estilo 3 do ASS a cor da caixa é a "OutlineColour" (formato &HAABBGGRR)
@@ -743,7 +746,7 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
                      f"[fundo][jogo]overlay=0:{gy}[baixo];"
                      f"[cam][baixo]vstack=inputs=2")
             margem_tit = CAM_H  # faixa do título encostada embaixo da webcam
-            margem_leg = max(40, (GAME_H - gy - jogo_h) // 2 - 40)  # legenda no espaço embaixo do jogo
+            margem_leg = int(H * ALTURA_LEGENDA)  # legenda por cima do jogo, um pouco abaixo do meio
 
     if grafo is None:
         filtros.append(corte_fino.rstrip(","))
@@ -1027,9 +1030,17 @@ def _duracao(arq: Path) -> float:
 def _iniciar_gravacao(url_live: str, pasta_blocos: Path, rodada: int, op: Opcoes, log: Log,
                       entrada: list[str] | None = None) -> subprocess.Popen:
     if entrada is None:
-        info = info_do_link(url_live, "best[height<=1080][protocol^=m3u8]/best[height<=1080]/best")
-        cabecalhos = "".join(f"{k}: {v}\r\n" for k, v in (info.get("http_headers") or {}).items())
-        entrada = (["-headers", cabecalhos] if cabecalhos else []) + ["-i", info["url"]]
+        # algumas lives só têm vídeo e áudio separados: aí o FFmpeg recebe os dois e junta na gravação
+        info = info_do_link(url_live, "best[height<=1080][protocol^=m3u8]"
+                                      "/bv*[height<=1080][protocol^=m3u8]+ba[protocol^=m3u8]"
+                                      "/best[height<=1080]/bv*[height<=1080]+ba/best/bv*+ba")
+        partes = info.get("requested_formats") or [info]
+        entrada = []
+        for f in partes:
+            cabecalhos = "".join(f"{k}: {v}\r\n" for k, v in (f.get("http_headers") or {}).items())
+            entrada += (["-headers", cabecalhos] if cabecalhos else []) + ["-i", f["url"]]
+        if len(partes) > 1:
+            entrada += ["-map", "0:v:0", "-map", "1:a:0"]
     cmd = [achar_exe("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", *entrada,
            "-c", "copy", "-f", "segment", "-segment_time", str(op.bloco_min * 60),
            "-reset_timestamps", "1", str(pasta_blocos / f"r{rodada:02d}_bloco_%03d.ts")]
