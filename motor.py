@@ -99,12 +99,15 @@ def tem_ffmpeg() -> bool:
 def instalar_ffmpeg(log: Log) -> None:
     """Instala o FFmpeg pelo winget (gerenciador de apps do Windows)."""
     log("Instalando o FFmpeg pelo winget (uma vez só)...")
-    r = _run(["winget", "install", "-e", "--id", "Gyan.FFmpeg", "--silent",
+    # --source winget: sem isso o winget também consulta a Microsoft Store (msstore),
+    # e se ela não responder a instalação inteira falha
+    r = _run(["winget", "install", "-e", "--id", "Gyan.FFmpeg", "--source", "winget", "--silent",
               "--accept-package-agreements", "--accept-source-agreements"],
              capture_output=True, text=True)
     if not tem_ffmpeg():
         raise RuntimeError("Não consegui instalar o FFmpeg automaticamente.\n"
-                           "Instale manualmente: abra o PowerShell e rode  winget install Gyan.FFmpeg\n\n"
+                           "Instale manualmente: abra o PowerShell e rode  "
+                           "winget install Gyan.FFmpeg --source winget\n\n"
                            + (r.stdout or r.stderr)[-500:])
     log("FFmpeg instalado!")
 
@@ -123,7 +126,8 @@ def achar_exe(nome: str) -> str:
         if c.exists():
             return str(c)
     raise RuntimeError(
-        f"Não encontrei o {nome}. Instale com:  winget install Gyan.FFmpeg  e abra o programa de novo."
+        f"Não encontrei o {nome}. Instale com:  winget install Gyan.FFmpeg --source winget  "
+        "e abra o programa de novo."
     )
 
 
