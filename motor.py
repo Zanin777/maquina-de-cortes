@@ -57,6 +57,7 @@ class Opcoes:
     yt_modo: str = "publico"  # publico | nao_listado | privado | agendado
     yt_intervalo_min: int = 20  # modo agendado: um Short a cada X minutos
     yt_nota_min: int = 7  # só publica cortes com nota da IA igual ou maior
+    revisar_antes: bool = True  # publicar só depois de aprovar na tela de revisão
 
 
 @dataclass
@@ -974,6 +975,38 @@ def alterar_cortes_json(pasta: Path, mudanca: Callable[[list], None]) -> list:
             trava.unlink(missing_ok=True)
 
 
+def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: str, op: Opcoes, log: Log) -> None:
+    """Renderiza de novo um corte com outro início/fim/título (tela de revisão). Usa a transcrição salva."""
+    r = next(x for x in json.loads((pasta / "cortes.json").read_text(encoding="utf-8")) if x["arquivo"] == arquivo)
+    video = Path(r.get("video", ""))
+    if not r.get("video") or not video.exists():
+        raise RuntimeError("O vídeo original não está mais no PC (blocos de live são apagados depois de cortados), "
+                           "então não dá para mudar início e fim deste corte.")
+    if fim - inicio < 3:
+        raise RuntimeError("O corte precisa ter pelo menos 3 segundos.")
+    segmentos = transcrever(video, op, log)
+    palavras = [Palavra(w["inicio"], w["fim"], w["texto"]) for s in segmentos for w in s["palavras"]
+                if w["inicio"] >= inicio - 0.05 and w["fim"] <= fim + 0.05]
+    corte = Corte(inicio, fim, titulo.strip() or r["titulo"], r.get("descricao", ""), r.get("nota", 0), palavras)
+    log(f"Refazendo '{arquivo}' ({_fmt(inicio)} → {_fmt(fim)})...")
+    # renderiza num arquivo à parte: se o vídeo estiver aberto no player, o original continua inteiro
+    tmp = pasta / f"refazendo-{arquivo}"
+    renderizar(video, corte, tmp, op, log)
+    try:
+        os.replace(tmp, pasta / arquivo)
+    except PermissionError:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("Feche o vídeo no player e tente de novo (o Windows não deixa trocar um arquivo aberto).")
+
+    def mudar(lista):
+        for x in lista:
+            if x["arquivo"] == arquivo:
+                x.update(inicio=round(inicio, 2), fim=round(fim, 2), duracao=round(fim - inicio, 1),
+                         titulo=corte.titulo, fala=" ".join(w.texto for w in palavras)[:2000])
+    alterar_cortes_json(pasta, mudar)
+    log("  pronto.")
+
+
 def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "",
                  inicio_min: float = 0.0) -> list[Corte]:
     """Transcreve, escolhe e edita os cortes de um arquivo. Retorna os cortes que saíram."""
@@ -994,8 +1027,11 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
         renderizar(video, c, pasta / nome, op, log)
         r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao, "tags": c.tags, "fonte": fonte,
              "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(c.fim - c.inicio, 1),
-             "nota": c.nota, "origem": video.name, "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
-        if op.publicar_youtube:
+             "nota": c.nota, "origem": video.name, "video": str(video.resolve()),
+             "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
+        if op.publicar_youtube and op.revisar_antes:
+            pass  # vai para a tela de revisão no final; nada sobe sem você aprovar
+        elif op.publicar_youtube:
             if c.nota >= op.yt_nota_min:
                 try:
                     import publicador

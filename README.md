@@ -61,6 +61,13 @@ só guarda uma autorização no seu PC (`Documentos\MaquinaCortes\youtube_token.
 5. Na Máquina de Cortes, clique em **Conectar YouTube...**, escolha esse JSON e faça login no navegador.
    Vai aparecer um aviso de "app não verificado" (é o seu próprio app): **Avançado → Acessar**.
 
+**Revisar antes (ligado por padrão):** nada sobe sozinho. Quando os cortes ficam prontos abre a tela de
+revisão: assista cada corte (**▶ Ver**), troque o título ou ajuste início e fim e clique em **Refazer**
+(o vídeo é editado de novo na hora), e marque os que vão para o canal. **Publicar aprovados** envia só
+esses; os desmarcados ficam como descartados e nunca são publicados (nem pela fila do limite diário).
+Dá para abrir essa tela a qualquer hora em **✔ Revisar cortes...** (inclusive no meio de uma live).
+Desmarque "Revisar antes" para voltar a publicar direto, sem revisão.
+
 **Opções na janela:**
 - **Público na hora**, **Agendado (fila)** — um Short a cada X horas, para não soltar tudo de uma vez —,
   **Não listado** (você revisa antes) ou **Privado**.

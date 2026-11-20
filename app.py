@@ -118,6 +118,8 @@ class App(tk.Tk):
         ttk.Label(yt, text="min   nota mín.").pack(side="left")
         self.nota_yt = tk.IntVar(value=cfg.get("yt_nota_min", 7))
         ttk.Spinbox(yt, from_=1, to=10, width=3, textvariable=self.nota_yt).pack(side="left", padx=3)
+        self.revisar = tk.BooleanVar(value=cfg.get("revisar_antes", True))
+        ttk.Checkbutton(yt, text="Revisar antes", variable=self.revisar).pack(side="left", padx=(8, 0))
         ttk.Button(yt, text="Conectar YouTube...", command=self.conectar_youtube).pack(side="left", padx=(10, 4))
         self.yt_txt = tk.StringVar(value="conectado" if publicador.conectado() else "não conectado")
         ttk.Label(yt, textvariable=self.yt_txt, foreground="#666").pack(side="left")
@@ -135,6 +137,7 @@ class App(tk.Tk):
         self.bt_parar.pack(side="left", padx=(0, 10))
         self.bt_pasta = ttk.Button(bts, text="Abrir pasta dos cortes", command=self.abrir_pasta)
         self.bt_pasta.pack(side="left")
+        ttk.Button(bts, text="✔ Revisar cortes...", command=self.escolher_revisao).pack(side="left", padx=(10, 0))
         ttk.Button(bts, text="▲  Publicar cortes já feitos...", command=self.publicar_feitos).pack(side="left", padx=10)
         ttk.Button(bts, text="🧠 Aprender com o canal", command=self.aprender_canal).pack(side="left")
         self.parar = threading.Event()
@@ -176,6 +179,9 @@ class App(tk.Tk):
                 self.abrir_marcador(valor)
             elif tipo == "yt":
                 self.yt_txt.set(valor)
+            elif tipo == "status":  # texto de uma linha da tela de revisão (vindo de outra thread)
+                variavel, texto = valor
+                variavel.set(texto)
             elif tipo == "fim_yt":
                 self.barra.stop()
                 self.publicando = False
@@ -185,7 +191,9 @@ class App(tk.Tk):
                 self.bt_parar.config(state="disabled")
                 if isinstance(valor, Path):
                     self.pasta_saida = valor
-                    if messagebox.askyesno("Pronto!", "Cortes prontos. Abrir a pasta?"):
+                    if self.publicar.get() and self.revisar.get():
+                        self.abrir_revisao(valor)
+                    elif messagebox.askyesno("Pronto!", "Cortes prontos. Abrir a pasta?"):
                         self.abrir_pasta()
                 else:
                     messagebox.showerror("Erro", str(valor))
@@ -200,6 +208,7 @@ class App(tk.Tk):
             layout=self.layouts.get(self.layout.get(), "streamer"), cam_regiao=self.cam_regiao,
             publicar_youtube=self.publicar.get(), yt_modo=self.modos_yt.get(self.modo_yt.get(), "publico"),
             yt_intervalo_min=self.intervalo_yt.get(), yt_nota_min=self.nota_yt.get(),
+            revisar_antes=self.revisar.get(),
         )
 
     # ---------------- YouTube ----------------
@@ -276,6 +285,126 @@ class App(tk.Tk):
             self.fila.put(("fim_yt", None))
 
         threading.Thread(target=trabalho, daemon=True).start()
+
+    # ---------------- revisão ----------------
+    def escolher_revisao(self):
+        pasta = filedialog.askdirectory(title="Escolha a pasta dos cortes para revisar",
+                                        initialdir=str(self.pasta_saida or motor.PASTA_SAIDA))
+        if pasta:
+            self.abrir_revisao(Path(pasta))
+
+    def abrir_revisao(self, pasta: Path):
+        """Lista os cortes da pasta: assistir, mudar título/início/fim (refaz o vídeo) e aprovar para o YouTube."""
+        if not (pasta / "cortes.json").exists():
+            messagebox.showwarning("Revisar", "Essa pasta não tem cortes (falta o cortes.json).")
+            return
+        dados = json.loads((pasta / "cortes.json").read_text(encoding="utf-8"))
+        publicados = publicador.publicados()
+        jan = tk.Toplevel(self)
+        jan.title(f"Revisar cortes — {pasta.name}")
+        jan.geometry("1000x600")
+        ttk.Label(jan, padding=8, text="Assista, ajuste e aprove. Só os marcados vão para o YouTube; os desmarcados "
+                                       "ficam como descartados. Mudou título, início ou fim? Clique em Refazer.").pack(anchor="w")
+
+        caixa = ttk.Frame(jan)
+        caixa.pack(fill="both", expand=True, padx=8)
+        cv = tk.Canvas(caixa, highlightthickness=0)
+        rolagem = ttk.Scrollbar(caixa, orient="vertical", command=cv.yview)
+        lista = ttk.Frame(cv)
+        lista.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.create_window((0, 0), window=lista, anchor="nw")
+        cv.configure(yscrollcommand=rolagem.set)
+        cv.pack(side="left", fill="both", expand=True)
+        rolagem.pack(side="right", fill="y")
+        jan.bind("<MouseWheel>", lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
+
+        for col, txt in enumerate(["Aprovar", "Nota", "Título", "Início (s)", "Fim (s)", "", "", ""]):
+            ttk.Label(lista, text=txt, font=("Segoe UI", 9, "bold")).grid(row=0, column=col, sticky="w", padx=4)
+        linhas = []
+        for i, r in enumerate(sorted(dados, key=lambda x: -x.get("nota", 0)), 1):
+            link = r.get("youtube") or (publicados.get(f"{pasta.name}/{r['arquivo']}") or {}).get("link")
+            ln = {"arquivo": r["arquivo"], "link": link,
+                  "aprovar": tk.BooleanVar(value=not link and not r.get("descartado")
+                                           and (r.get("aprovado") or r.get("nota", 0) >= self.nota_yt.get())),
+                  "titulo": tk.StringVar(value=r["titulo"]),
+                  "ini": tk.DoubleVar(value=r.get("inicio", 0.0)), "fim": tk.DoubleVar(value=r.get("fim", 0.0)),
+                  "status": tk.StringVar(value="já publicado" if link else "")}
+            linhas.append(ln)
+            livre = "disabled" if link else "normal"
+            ajustavel = "normal" if not link and Path(r.get("video") or "_").exists() else "disabled"
+            ttk.Checkbutton(lista, variable=ln["aprovar"], state=livre).grid(row=i, column=0)
+            ttk.Label(lista, text=str(r.get("nota", "?"))).grid(row=i, column=1)
+            ttk.Entry(lista, textvariable=ln["titulo"], width=46, state=livre).grid(row=i, column=2, padx=4, pady=2)
+            for col, chave in ((3, "ini"), (4, "fim")):
+                ttk.Spinbox(lista, from_=0, to=10 ** 6, increment=0.5, width=8, textvariable=ln[chave],
+                            state=ajustavel).grid(row=i, column=col, padx=2)
+            ttk.Button(lista, text="▶ Ver", width=6,
+                       command=lambda a=r["arquivo"]: os.startfile(pasta / a)).grid(row=i, column=5, padx=2)
+            ttk.Button(lista, text="Refazer", width=8, state=ajustavel,
+                       command=lambda ln=ln: refazer(ln)).grid(row=i, column=6, padx=2)
+            ttk.Label(lista, textvariable=ln["status"], foreground="#666").grid(row=i, column=7, sticky="w")
+
+        def refazer(ln):
+            op = self.opcoes()
+            ln["status"].set("refazendo...")
+
+            def trabalho():
+                log = lambda m: self.fila.put(("log", m))
+                try:
+                    motor.refazer_corte(pasta, ln["arquivo"], ln["ini"].get(), ln["fim"].get(), ln["titulo"].get(), op, log)
+                    self.fila.put(("status", (ln["status"], "refeito ✔")))
+                except Exception as e:
+                    log(f"Erro ao refazer '{ln['arquivo']}': {e}")
+                    self.fila.put(("status", (ln["status"], "erro (veja o registro)")))
+
+            threading.Thread(target=trabalho, daemon=True).start()
+
+        def salvar():
+            por_arquivo = {ln["arquivo"]: ln for ln in linhas if not ln["link"]}
+
+            def mudar(lista_json):
+                for x in lista_json:
+                    ln = por_arquivo.get(x["arquivo"])
+                    if ln:
+                        x["aprovado"] = ln["aprovar"].get()
+                        x["descartado"] = not ln["aprovar"].get()
+                        x["titulo"] = ln["titulo"].get().strip() or x["titulo"]
+            motor.alterar_cortes_json(pasta, mudar)
+            return [ln for ln in por_arquivo.values() if ln["aprovar"].get()]
+
+        def publicar():
+            if not publicador.conectado():
+                messagebox.showwarning("YouTube", "Conecte sua conta do YouTube primeiro (botão 'Conectar YouTube...').",
+                                       parent=jan)
+                return
+            aprovados = salvar()
+            if not aprovados:
+                messagebox.showinfo("Revisar", "Nenhum corte aprovado. Os desmarcados ficaram como descartados.", parent=jan)
+                return
+            op = self.opcoes()
+            if not messagebox.askyesno("Publicar no YouTube", f"Enviar {len(aprovados)} cortes aprovados?\n\n"
+                                       f"Modo: {self.modo_yt.get()}", parent=jan):
+                return
+            jan.destroy()
+            self.barra.start(12)
+            self.log("-" * 60)
+
+            def trabalho():
+                log = lambda m: self.fila.put(("log", m))
+                try:
+                    publicador.publicar_pasta(pasta, op.yt_modo, op.yt_intervalo_min, op.yt_nota_min, log)
+                except Exception as e:
+                    log(f"Erro ao publicar: {e}")
+                self.fila.put(("fim_yt", None))
+
+            threading.Thread(target=trabalho, daemon=True).start()
+
+        rodape = ttk.Frame(jan, padding=8)
+        rodape.pack(fill="x")
+        ttk.Button(rodape, text="Abrir pasta", command=lambda: os.startfile(pasta)).pack(side="left")
+        ttk.Button(rodape, text="▲  Publicar aprovados", command=publicar).pack(side="right")
+        ttk.Button(rodape, text="Salvar escolhas", command=lambda: (salvar(), self.log("Revisão salva."))).pack(
+            side="right", padx=8)
 
     def conectar_youtube(self):
         arquivo = None

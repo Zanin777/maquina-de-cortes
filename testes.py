@@ -1,4 +1,8 @@
 """Autoteste das partes do motor que não dependem de IA nem de vídeo: python testes.py"""
+import json
+import tempfile
+from pathlib import Path
+
 import motor
 
 
@@ -35,6 +39,29 @@ def teste_encurtar_pelo_comeco():
     assert onde == "fim" and resto[0].inicio == 0 and resto[-1].fim <= 58.4
     # já cabe: não mexe
     assert motor._caber_na_duracao(palavras[:30], [0, 10], 59) == (palavras[:30], "")
+
+
+def teste_publicar_respeita_revisao():
+    import publicador
+    enviados = []
+    antigos = publicador.publicar, publicador.registrar, publicador.publicados
+    publicador.publicar = lambda video, *a, **k: enviados.append(video.name) or "https://youtube.com/shorts/x"
+    publicador.registrar = lambda *a: None
+    publicador.publicados = lambda: {}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            pasta = Path(tmp)
+            cortes = [{"arquivo": "bom.mp4", "titulo": "a", "nota": 9},
+                      {"arquivo": "descartado.mp4", "titulo": "b", "nota": 9, "descartado": True},
+                      {"arquivo": "nota-baixa-aprovado.mp4", "titulo": "c", "nota": 3, "aprovado": True},
+                      {"arquivo": "nota-baixa.mp4", "titulo": "d", "nota": 3}]
+            for c in cortes:
+                (pasta / c["arquivo"]).write_bytes(b"x")
+            (pasta / "cortes.json").write_text(json.dumps(cortes), encoding="utf-8")
+            publicador.publicar_pasta(pasta, "privado", 20, 7, lambda m: None)
+    finally:
+        publicador.publicar, publicador.registrar, publicador.publicados = antigos
+    assert sorted(enviados) == ["bom.mp4", "nota-baixa-aprovado.mp4"], enviados
 
 
 if __name__ == "__main__":

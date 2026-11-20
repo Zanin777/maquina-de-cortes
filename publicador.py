@@ -311,10 +311,10 @@ def publicar_pasta(pasta: Path, modo: str, intervalo_min: float, nota_min: int, 
     for p in pastas_de_cortes(pasta):
         dados = json.loads((p / "cortes.json").read_text(encoding="utf-8"))
         for i, r in enumerate(dados):
-            if r.get("youtube") or ja_publicado(p / r["arquivo"], r.get("titulo", "")) \
+            if r.get("youtube") or r.get("descartado") or ja_publicado(p / r["arquivo"], r.get("titulo", "")) \
                     or not (p / r["arquivo"]).exists():
                 continue
-            if r.get("nota", 0) < nota_min:
+            if r.get("nota", 0) < nota_min and not r.get("aprovado"):  # aprovado na revisão passa da nota
                 continue
             pendentes.append((r.get("nota", 0), p, r["arquivo"]))
     if not pendentes:
