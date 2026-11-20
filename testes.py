@@ -77,6 +77,25 @@ def teste_pasta_livre():
         assert motor._pasta_livre(base).name == "video (3)"
 
 
+def teste_login_vencido_nao_fica_tentando():
+    chamadas = []
+
+    def falha(*a):
+        chamadas.append(1)
+        raise RuntimeError("Claude Code: Failed to authenticate: OAuth session expired")
+    antigo = motor._ia_pelo_claude_code
+    motor._ia_pelo_claude_code = falha
+    try:
+        motor.perguntar_ia("s", "c", motor.Opcoes(), lambda m: None, {}, "", "t")
+    except RuntimeError as e:
+        assert "/login" in str(e)
+    else:
+        raise AssertionError("devia falhar")
+    finally:
+        motor._ia_pelo_claude_code = antigo
+    assert len(chamadas) == 1  # sem esperar 7 min em tentativas inúteis
+
+
 if __name__ == "__main__":
     for nome, f in list(globals().items()):
         if nome.startswith("teste_"):

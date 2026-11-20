@@ -435,6 +435,11 @@ def perguntar_ia(sistema: str, conteudo: str, op: Opcoes, log: Log, schema: dict
                 return _ia_pela_api(sistema, conteudo, op, log, schema, tarefa)
             return _ia_pelo_claude_code(sistema, conteudo, log, formato, tarefa)
         except Exception as e:
+            if re.search(r"authenticat|invalid x-api-key|not logged in|please run /login", str(e), re.I):
+                # login vencido ou chave errada não se resolve esperando: avisa na hora como resolver
+                raise RuntimeError(
+                    f"{e}\n\nA IA não aceitou o login. Se usa a assinatura: abra o PowerShell, rode  claude  e "
+                    "digite  /login . Se usa chave de API: confira a chave no console.anthropic.com.") from e
             if tentativa == len(esperas):
                 raise
             log(f"  ⚠ A IA falhou ({str(e).splitlines()[0][:160]}). Tentando de novo em {esperas[tentativa]} s...")
