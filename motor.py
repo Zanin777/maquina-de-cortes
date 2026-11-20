@@ -223,8 +223,7 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
         log("Usando transcrição já salva (cache).")
         return _limpar_segmentos(json.loads(cache.read_text(encoding="utf-8")))
 
-    log(f"Carregando Whisper '{op.modelo_whisper}' (na 1ª vez ele baixa o modelo)...")
-    modelo = _carregar_whisper(op.modelo_whisper)
+    modelo = _carregar_whisper(op.modelo_whisper, log)
     log("Extraindo o áudio...")
     import numpy as np
     bruto = _run(
@@ -244,7 +243,7 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
                 raise
             log("  (a placa de vídeo não tem as bibliotecas CUDA: transcrevendo pelo processador)")
             _DISPOSITIVO_WHISPER[0] = "cpu"
-            modelo = _carregar_whisper(op.modelo_whisper)
+            modelo = _carregar_whisper(op.modelo_whisper, log)
     cache.write_text(json.dumps(resultado, ensure_ascii=False), encoding="utf-8")
     log(f"Transcrição pronta: {len(resultado)} trechos"
         + (f" ({descartados} descartados: silêncio/música que o Whisper confundiu com fala)." if descartados else "."))
@@ -254,9 +253,17 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
 _DISPOSITIVO_WHISPER = ["auto"]  # vira "cpu" na 1ª vez que a GPU falhar, para não tentar de novo
 
 
-def _carregar_whisper(nome: str):
-    from faster_whisper import WhisperModel
-    return WhisperModel(nome, device=_DISPOSITIVO_WHISPER[0], compute_type="int8")
+_WHISPER_CARREGADO: dict = {}  # o último modelo usado fica na memória (na live, um por bloco era lento)
+
+
+def _carregar_whisper(nome: str, log: Log):
+    chave = (nome, _DISPOSITIVO_WHISPER[0])
+    if chave not in _WHISPER_CARREGADO:
+        from faster_whisper import WhisperModel
+        log(f"Carregando Whisper '{nome}' (na 1ª vez ele baixa o modelo)...")
+        _WHISPER_CARREGADO.clear()  # guarda só um: modelos grandes ocupam GBs
+        _WHISPER_CARREGADO[chave] = WhisperModel(nome, device=chave[1], compute_type="int8")
+    return _WHISPER_CARREGADO[chave]
 
 
 def _transcrever_audio(modelo, audio, op: Opcoes, log: Log) -> tuple[list[dict], int]:
