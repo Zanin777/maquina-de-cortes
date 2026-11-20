@@ -241,6 +241,71 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
     return resultado
 
 
+def picos_de_audio(video: Path, log: Log) -> list[dict]:
+    """Momentos em que o volume dispara bem acima do normal do vídeo (grito, risada, susto, explosão).
+    Devolve [{"inicio", "fim", "db"}], com db = quanto acima do volume típico."""
+    cache = video.with_suffix(f".picos-{video.stat().st_size}.json")
+    if cache.exists():
+        return json.loads(cache.read_text(encoding="utf-8"))
+    import numpy as np
+
+    log("Medindo o volume do áudio (gritos, risadas, sustos)...")
+    taxa, janela = 8000, 4000  # janelas de 0,5 s; 8 kHz basta para medir volume
+    proc = subprocess.Popen(
+        [achar_exe("ffmpeg"), "-v", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", str(taxa),
+         "-f", "s16le", "-"], stdout=subprocess.PIPE, creationflags=SEM_JANELA)
+    niveis = []
+    while True:  # lê aos pedaços: não guarda o áudio inteiro na memória
+        bloco = proc.stdout.read(janela * 2 * 120)
+        if not bloco:
+            break
+        a = np.frombuffer(bloco[:len(bloco) // 2 * 2], dtype=np.int16).astype(np.float32)
+        for i in range(0, len(a), janela):
+            rms = float(np.sqrt(np.mean(a[i:i + janela] ** 2))) if len(a[i:i + janela]) else 0.0
+            niveis.append(float(20 * np.log10(rms / 32768 + 1e-9)))
+    proc.wait()
+    picos = _achar_picos(niveis, janela / taxa)
+    cache.write_text(json.dumps(picos), encoding="utf-8")
+    return picos
+
+
+def _achar_picos(niveis: list[float], passo: float, max_picos: int = 80) -> list[dict]:
+    """Janelas bem mais altas que o normal (mediana + 10 dB e acima dos 10% mais altos), juntando as vizinhas."""
+    if len(niveis) < 20:
+        return []
+    ordenados = sorted(niveis)
+    mediana = ordenados[len(ordenados) // 2]
+    limiar = max(mediana + 10, ordenados[int(len(ordenados) * 0.9)] + 3)
+    picos: list[dict] = []
+    for i, db in enumerate(niveis):
+        if db < limiar:
+            continue
+        ini = i * passo
+        if picos and ini - picos[-1]["fim"] <= 1.5:
+            picos[-1]["fim"] = ini + passo
+            picos[-1]["db"] = max(picos[-1]["db"], round(db - mediana, 1))
+        else:
+            picos.append({"inicio": ini, "fim": ini + passo, "db": round(db - mediana, 1)})
+    picos = sorted(picos, key=lambda p: -p["db"])[:max_picos]  # só os mais fortes
+    return sorted(picos, key=lambda p: p["inicio"])
+
+
+def _transcricao_com_picos(segmentos: list[dict], picos: list[dict]) -> str:
+    """Transcrição em linhas, marcando com 🔊 as falas com pico de volume (e os picos sem fala)."""
+    linhas = []
+    usados = set()
+    for s in segmentos:
+        aqui = [i for i, p in enumerate(picos) if p["inicio"] < s["fim"] and p["fim"] > s["inicio"]]
+        usados.update(aqui)
+        marca = f" [🔊 volume alto +{max(picos[i]['db'] for i in aqui):.0f} dB]" if aqui else ""
+        linhas.append((s["inicio"], f"[{s['inicio']:.1f}s | {_fmt(s['inicio'])}] {s['texto']}{marca}"))
+    for i, p in enumerate(picos):
+        if i not in usados:
+            linhas.append((p["inicio"], f"[{p['inicio']:.1f}s | {_fmt(p['inicio'])}] "
+                                        f"[🔊 volume alto +{p['db']:.0f} dB, sem fala]"))
+    return "\n".join(t for _, t in sorted(linhas))
+
+
 # ----------------------------------------------------------------------------
 # 3. IA escolhe os cortes
 # ----------------------------------------------------------------------------
@@ -378,12 +443,11 @@ def _licoes_do_canal() -> str:
         return ""
 
 
-def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
+def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dict] | None = None) -> list[Corte]:
     if not segmentos:
         raise RuntimeError("A transcrição veio vazia — o vídeo tem fala?")
 
-    linhas = [f"[{s['inicio']:.1f}s | {_fmt(s['inicio'])}] {s['texto']}" for s in segmentos]
-    transcricao = "\n".join(linhas)
+    transcricao = _transcricao_com_picos(segmentos, picos or [])
 
     sistema = (
         "Você é um editor especialista em cortes virais para TikTok, Reels e YouTube Shorts. "
@@ -403,7 +467,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log) -> list[Corte]:
         "entre 25 e 45 segundos.\n"
         "- Título: até ~60 caracteres, curioso e fiel ao que acontece (sem mentir), em linguagem de internet; "
         "pode usar 1 emoji. Não comece com o nome do jogo.\n"
-        "- 'nota' é sua aposta honesta de desempenho (1-10); reserve 9-10 para momentos realmente fortes."
+        "- 'nota' é sua aposta honesta de desempenho (1-10); reserve 9-10 para momentos realmente fortes.\n"
+        "- Marcas [🔊 volume alto] indicam picos de som (grito, risada, susto, explosão no jogo). São fortes "
+        "candidatos a reação, mas confira pelo contexto da fala: música alta ou propaganda também disparam."
     )
     licoes = _licoes_do_canal()
     if licoes:
@@ -837,7 +903,12 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
     if not segmentos:
         log("  (sem fala neste trecho, pulando)")
         return 0
-    cortes = escolher_cortes(segmentos, op, log)
+    try:
+        picos = picos_de_audio(video, log)
+    except Exception as e:  # sem os picos a IA ainda escolhe pela fala
+        log(f"  (não consegui medir o volume: {e})")
+        picos = []
+    cortes = escolher_cortes(segmentos, op, log, picos)
     pasta.mkdir(parents=True, exist_ok=True)
     for i, c in enumerate(cortes, 1):
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"

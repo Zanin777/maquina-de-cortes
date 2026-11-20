@@ -12,6 +12,7 @@ licoes_do_canal.json
 downloads/
 cortes/
 *.transcricao-*.json
+*.picos-*.json
 
 # Python
 __pycache__/
