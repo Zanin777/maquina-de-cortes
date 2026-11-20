@@ -222,10 +222,8 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
         log("Usando transcrição já salva (cache).")
         return _limpar_segmentos(json.loads(cache.read_text(encoding="utf-8")))
 
-    from faster_whisper import WhisperModel
-
     log(f"Carregando Whisper '{op.modelo_whisper}' (na 1ª vez ele baixa o modelo)...")
-    modelo = WhisperModel(op.modelo_whisper, device="auto", compute_type="int8")
+    modelo = _carregar_whisper(op.modelo_whisper)
     log("Extraindo o áudio...")
     import numpy as np
     bruto = _run(
@@ -235,6 +233,32 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
     audio = np.frombuffer(bruto, dtype=np.float32)
     del bruto
     log("Transcrevendo... (isso é a parte mais demorada)")
+    while True:
+        try:
+            resultado, descartados = _transcrever_audio(modelo, audio, op, log)
+            break
+        except RuntimeError as e:
+            # placa NVIDIA sem as bibliotecas CUDA (cublas/cudnn): o erro só aparece ao transcrever
+            if _DISPOSITIVO_WHISPER[0] == "cpu" or not re.search(r"cublas|cudnn|cuda", str(e), re.I):
+                raise
+            log("  (a placa de vídeo não tem as bibliotecas CUDA: transcrevendo pelo processador)")
+            _DISPOSITIVO_WHISPER[0] = "cpu"
+            modelo = _carregar_whisper(op.modelo_whisper)
+    cache.write_text(json.dumps(resultado, ensure_ascii=False), encoding="utf-8")
+    log(f"Transcrição pronta: {len(resultado)} trechos"
+        + (f" ({descartados} descartados: silêncio/música que o Whisper confundiu com fala)." if descartados else "."))
+    return resultado
+
+
+_DISPOSITIVO_WHISPER = ["auto"]  # vira "cpu" na 1ª vez que a GPU falhar, para não tentar de novo
+
+
+def _carregar_whisper(nome: str):
+    from faster_whisper import WhisperModel
+    return WhisperModel(nome, device=_DISPOSITIVO_WHISPER[0], compute_type="int8")
+
+
+def _transcrever_audio(modelo, audio, op: Opcoes, log: Log) -> tuple[list[dict], int]:
     segs, info = modelo.transcribe(
         # sem filtro de voz: em live de jogo ele descartava a fala do streamer junto com o som do jogo
         audio, language=op.idioma or None, word_timestamps=True, vad_filter=False,
@@ -260,10 +284,7 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
         if pct >= ultimo_pct + 10:
             ultimo_pct = pct
             log(f"  transcrição {pct}%")
-    cache.write_text(json.dumps(resultado, ensure_ascii=False), encoding="utf-8")
-    log(f"Transcrição pronta: {len(resultado)} trechos"
-        + (f" ({descartados} descartados: silêncio/música que o Whisper confundiu com fala)." if descartados else "."))
-    return resultado
+    return resultado, descartados
 
 
 def picos_de_audio(video: Path, log: Log) -> list[dict]:
