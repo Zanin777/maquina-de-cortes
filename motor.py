@@ -225,26 +225,36 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
         return _limpar_segmentos(json.loads(cache.read_text(encoding="utf-8")))
 
     modelo = _carregar_whisper(op.modelo_whisper, log)
-    log("Extraindo o áudio...")
-    import numpy as np
-    bruto = _run(
-        [achar_exe("ffmpeg"), "-v", "error", "-i", str(video), "-vn", "-ac", "1", "-ar", "16000",
-         "-f", "f32le", "-"], capture_output=True, check=True,
-    ).stdout
-    audio = np.frombuffer(bruto, dtype=np.float32)
-    del bruto
     log("Transcrevendo... (isso é a parte mais demorada)")
-    while True:
-        try:
-            resultado, descartados = _transcrever_audio(modelo, audio, op, log)
+    progresso = {"total": _duracao(video) or 1, "pct": -10}
+    resultado: list[dict] = []
+    descartados, inicio = 0, 0.0
+    while True:  # em partes: o áudio inteiro de uma VOD longa ocupava GBs de memória
+        audio = _audio_16k(video, inicio, PARTE_TRANSCRICAO_S)
+        if not len(audio):
             break
-        except RuntimeError as e:
-            # placa NVIDIA sem as bibliotecas CUDA (cublas/cudnn): o erro só aparece ao transcrever
-            if _DISPOSITIVO_WHISPER[0] == "cpu" or not re.search(r"cublas|cudnn|cuda", str(e), re.I):
-                raise
-            log("  (a placa de vídeo não tem as bibliotecas CUDA: transcrevendo pelo processador)")
-            _DISPOSITIVO_WHISPER[0] = "cpu"
-            modelo = _carregar_whisper(op.modelo_whisper, log)
+        while True:
+            try:
+                segs, desc = _transcrever_audio(modelo, audio, op, log, inicio, progresso)
+                break
+            except RuntimeError as e:
+                # placa NVIDIA sem as bibliotecas CUDA (cublas/cudnn): o erro só aparece ao transcrever
+                if _DISPOSITIVO_WHISPER[0] == "cpu" or not re.search(r"cublas|cudnn|cuda", str(e), re.I):
+                    raise
+                log("  (a placa de vídeo não tem as bibliotecas CUDA: transcrevendo pelo processador)")
+                _DISPOSITIVO_WHISPER[0] = "cpu"
+                modelo = _carregar_whisper(op.modelo_whisper, log)
+        ultima_parte = len(audio) < (PARTE_TRANSCRICAO_S - 1) * 16000
+        avanco = PARTE_TRANSCRICAO_S
+        if not ultima_parte and len(segs) > 1 and segs[-1]["inicio"] - inicio > PARTE_TRANSCRICAO_S / 2:
+            # a última frase pode ter sido cortada no meio pela divisão: ela é refeita no começo da próxima parte
+            avanco = segs.pop()["inicio"] - inicio
+        resultado += segs
+        descartados += desc
+        del audio
+        if ultima_parte:
+            break
+        inicio += avanco
     cache.write_text(json.dumps(resultado, ensure_ascii=False), encoding="utf-8")
     log(f"Transcrição pronta: {len(resultado)} trechos"
         + (f" ({descartados} descartados: silêncio/música que o Whisper confundiu com fala)." if descartados else "."))
@@ -267,15 +277,28 @@ def _carregar_whisper(nome: str, log: Log):
     return _WHISPER_CARREGADO[chave]
 
 
-def _transcrever_audio(modelo, audio, op: Opcoes, log: Log) -> tuple[list[dict], int]:
+PARTE_TRANSCRICAO_S = 20 * 60  # 20 min de áudio = ~77 MB na memória
+
+
+def _audio_16k(video: Path, inicio: float, duracao: float):
+    import numpy as np
+    bruto = _run(
+        [achar_exe("ffmpeg"), "-v", "error", "-ss", f"{inicio:.3f}", "-t", f"{duracao:.3f}", "-i", str(video),
+         "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"], capture_output=True, check=True,
+    ).stdout
+    return np.frombuffer(bruto, dtype=np.float32)
+
+
+def _transcrever_audio(modelo, audio, op: Opcoes, log: Log, inicio: float = 0.0,
+                       progresso: dict | None = None) -> tuple[list[dict], int]:
+    """Transcreve um pedaço de áudio; os tempos já saem somados ao `inicio` do pedaço no vídeo."""
     segs, info = modelo.transcribe(
         # sem filtro de voz: em live de jogo ele descartava a fala do streamer junto com o som do jogo
         audio, language=op.idioma or None, word_timestamps=True, vad_filter=False,
         condition_on_previous_text=False,
     )
     resultado = []
-    total = info.duration or 1
-    ultimo_pct = -10
+    progresso = progresso if progresso is not None else {"total": info.duration or 1, "pct": -10}
     descartados = 0
     for s in segs:
         # mesma regra do Whisper original: provável silêncio e texto com pouca confiança = inventado;
@@ -285,13 +308,13 @@ def _transcrever_audio(modelo, audio, op: Opcoes, log: Log) -> tuple[list[dict],
             descartados += 1
             continue
         resultado.append({
-            "inicio": s.start, "fim": s.end, "texto": s.text.strip(),
-            "palavras": [{"inicio": w.start, "fim": w.end, "texto": w.word.strip()}
+            "inicio": inicio + s.start, "fim": inicio + s.end, "texto": s.text.strip(),
+            "palavras": [{"inicio": inicio + w.start, "fim": inicio + w.end, "texto": w.word.strip()}
                          for w in (s.words or []) if w.word.strip()],
         })
-        pct = int(s.end / total * 100)
-        if pct >= ultimo_pct + 10:
-            ultimo_pct = pct
+        pct = min(100, int((inicio + s.end) / progresso["total"] * 100))
+        if pct >= progresso["pct"] + 10:
+            progresso["pct"] = pct
             log(f"  transcrição {pct}%")
     return resultado, descartados
 
