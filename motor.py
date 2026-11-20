@@ -489,6 +489,24 @@ def _licoes_do_canal() -> str:
         return ""
 
 
+def _caber_na_duracao(dentro: list[Palavra], inicios_frase: list[float], dur_max: float) -> tuple[list[Palavra], str]:
+    """Se o corte passou da duração máxima, tira a preparação do começo (a partir de um início de frase),
+    porque o final costuma ter a punchline. Se para isso tiver que jogar fora mais da metade, corta o fim."""
+    maximo = dur_max - 0.6
+    ini, fim = dentro[0].inicio, dentro[-1].fim
+    if fim - ini <= maximo:
+        return dentro, ""
+    for t in inicios_frase:  # o 1º início de frase que faz caber = o menor corte possível
+        if t <= ini:
+            continue
+        resto = [w for w in dentro if w.inicio >= t - 0.3]
+        if resto and fim - resto[0].inicio <= maximo:
+            if resto[0].inicio - ini <= (fim - ini) / 2:
+                return resto, "começo"
+            break
+    return [w for w in dentro if w.fim <= ini + maximo] or dentro[:1], "fim"
+
+
 def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dict] | None = None) -> list[Corte]:
     if not segmentos:
         raise RuntimeError("A transcrição veio vazia — o vídeo tem fala?")
@@ -536,6 +554,7 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
 
     # todas as palavras com tempo, para alinhar os cortes certinho
     palavras = [Palavra(w["inicio"], w["fim"], w["texto"]) for s in segmentos for w in s["palavras"]]
+    inicios_frase = sorted(s["inicio"] for s in segmentos)
     cortes: list[Corte] = []
     for c in dados["cortes"]:
         ini, fim = float(c["inicio"]), float(c["fim"])
@@ -544,11 +563,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         dentro = [w for w in palavras if w.inicio >= ini - 0.5 and w.fim <= fim + 1.5]
         if not dentro:
             continue
-        # nunca passa da duração máxima: termina na última palavra que cabe
-        limite = dentro[0].inicio + op.dur_max - 0.6
-        if dentro[-1].fim > limite:
-            dentro = [w for w in dentro if w.fim <= limite] or dentro[:1]
-            log(f"  (corte '{c['titulo'][:40]}' passou de {op.dur_max}s; encurtado)")
+        dentro, onde = _caber_na_duracao(dentro, inicios_frase, op.dur_max)
+        if onde:
+            log(f"  (corte '{c['titulo'][:40]}' passou de {op.dur_max}s; encurtado no {onde})")
         ini = max(0.0, dentro[0].inicio - 0.15)
         fim = dentro[-1].fim + 0.35
         # evita sobreposição com cortes já aceitos

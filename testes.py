@@ -24,6 +24,19 @@ def teste_alucinacoes():
     assert not motor.eh_alucinacao("e aí eu falei pra ele: obrigado por assistir a live inteira, você é brabo demais mano")
 
 
+def teste_encurtar_pelo_comeco():
+    P = motor.Palavra
+    palavras = [P(t, t + 0.8, f"w{t}") for t in range(0, 70)]  # 70 s de fala
+    # frases começam a cada 10 s: tira 10 s do começo e mantém o final (punchline)
+    resto, onde = motor._caber_na_duracao(palavras, [0, 10, 20, 30, 40, 50, 60], 59)
+    assert onde == "começo" and resto[0].inicio == 20 and resto[-1].inicio == 69, (onde, resto[0])
+    # sem início de frase que sirva (só lá no fim): corta o fim, como antes
+    resto, onde = motor._caber_na_duracao(palavras, [0, 65], 59)
+    assert onde == "fim" and resto[0].inicio == 0 and resto[-1].fim <= 58.4
+    # já cabe: não mexe
+    assert motor._caber_na_duracao(palavras[:30], [0, 10], 59) == (palavras[:30], "")
+
+
 if __name__ == "__main__":
     for nome, f in list(globals().items()):
         if nome.startswith("teste_"):
