@@ -1168,6 +1168,16 @@ def _aprender_se_preciso(op: Opcoes, log: Log) -> None:
         log(f"  (não consegui atualizar as lições do canal: {e})")
 
 
+def _pasta_livre(pasta: Path) -> Path:
+    """Rodar o mesmo vídeo de novo vai para 'nome (2)', 'nome (3)'...: os cortes da vez anterior
+    (e o registro de quais foram para o YouTube) ficam intactos, sem misturar arquivos velhos e novos."""
+    base, n = pasta, 2
+    while pasta.exists() and any(pasta.iterdir()):
+        pasta = base.with_name(f"{base.name} ({n})")
+        n += 1
+    return pasta
+
+
 def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = None) -> Path:
     checar_caminho()
     achar_exe("ffmpeg")
@@ -1178,10 +1188,7 @@ def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = 
         if info.get("is_live"):
             return processar_ao_vivo(fonte, info, op, log, parar)
     video = obter_video(fonte, log)
-    pasta = PASTA_SAIDA / _nome_arquivo(video.stem)
-    if (pasta / "legendas_dos_posts.txt").exists():
-        (pasta / "legendas_dos_posts.txt").unlink()
-        (pasta / "cortes.json").unlink(missing_ok=True)
+    pasta = _pasta_livre(PASTA_SAIDA / _nome_arquivo(video.stem))
     n = len(cortar_video(video, pasta, op, log, fonte=fonte.strip() if eh_link(fonte) else ""))
     if not n:
         raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")

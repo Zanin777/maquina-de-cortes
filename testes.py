@@ -64,6 +64,19 @@ def teste_publicar_respeita_revisao():
     assert sorted(enviados) == ["bom.mp4", "nota-baixa-aprovado.mp4"], enviados
 
 
+def teste_pasta_livre():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "video"
+        assert motor._pasta_livre(base) == base  # não existe: usa ela
+        base.mkdir()
+        assert motor._pasta_livre(base) == base  # existe mas vazia: usa ela
+        (base / "01 - a.mp4").write_bytes(b"x")
+        assert motor._pasta_livre(base).name == "video (2)"
+        (Path(tmp) / "video (2)").mkdir()
+        (Path(tmp) / "video (2)" / "cortes.json").write_text("[]")
+        assert motor._pasta_livre(base).name == "video (3)"
+
+
 if __name__ == "__main__":
     for nome, f in list(globals().items()):
         if nome.startswith("teste_"):
