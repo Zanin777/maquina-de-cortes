@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import statistics
@@ -1260,10 +1261,30 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
     gravador = _iniciar_gravacao(url, pasta_blocos, rodada, op, log, entrada_teste)
     feitos: set[str] = set()
     falhos: list[tuple[int, Path]] = []
-    total = 0
     n_bloco = 0
     emenda = _EmendaDosBlocos(pasta_blocos)
     vigia = {"tamanho": -1, "desde": time.time()}  # detecta gravação travada (sem dados chegando)
+
+    # os blocos são cortados em outra thread: transcrever demora, e enquanto isso o vigia da
+    # gravação (travou? caiu? pediram para parar?) precisa continuar rodando
+    fila_blocos: queue.Queue = queue.Queue()
+    contagem = {"total": 0}
+
+    def cortador():
+        while (item := fila_blocos.get()) is not None:
+            n, bloco = item
+            log(f"— Cortando o bloco {n}...")
+            try:
+                contagem["total"] += emenda.cortar(bloco, n, pasta, op, log, url)
+                bloco.unlink(missing_ok=True)  # bloco já cortado: libera espaço (~3 GB por hora de live)
+            except Exception as e:
+                log(f"  Erro no bloco {n}: {e}")
+                log("  O bloco foi guardado e vai ser cortado de novo no final da live.")
+                falhos.append((n, bloco))
+            log(f"— Bloco {n} pronto. Total até agora: {contagem['total']} cortes em {pasta}")
+
+    trabalhador = threading.Thread(target=cortador, daemon=True)
+    trabalhador.start()
 
     def pendentes(gravando: bool) -> list[Path]:
         arqs = sorted(pasta_blocos.glob("r*_bloco_*.ts"))
@@ -1292,15 +1313,10 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
             if dur < 30:
                 continue
             n_bloco += 1
-            log(f"— Bloco {n_bloco} fechado ({dur / 60:.0f} min). Cortando...")
-            try:
-                total += emenda.cortar(bloco, n_bloco, pasta, op, log, url)
-                bloco.unlink(missing_ok=True)  # bloco já cortado: libera espaço (~3 GB por hora de live)
-            except Exception as e:
-                log(f"  Erro no bloco {n_bloco}: {e}")
-                log("  O bloco foi guardado e vai ser cortado de novo no final da live.")
-                falhos.append((n_bloco, bloco))
-            log(f"— Bloco {n_bloco} pronto. Total até agora: {total} cortes em {pasta}")
+            espera = fila_blocos.qsize()
+            log(f"— Bloco {n_bloco} fechado ({dur / 60:.0f} min)."
+                + (f" Na fila: o corte está mais lento que a live ({espera} blocos esperando)." if espera else ""))
+            fila_blocos.put((n_bloco, bloco))
 
         if gravando and entrada_teste is None:
             atuais = sorted(pasta_blocos.glob(f"r{rodada:02d}_bloco_*.ts"))
@@ -1335,6 +1351,11 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
 
         parar.wait(5)
 
+    fila_blocos.put(None)
+    if fila_blocos.qsize() > 1:
+        log(f"Gravação encerrada. Terminando de cortar {fila_blocos.qsize() - 1} blocos que faltam...")
+    trabalhador.join()
+    total = contagem["total"]
     emenda.descartar()
     for n, bloco in falhos:  # segunda chance para os blocos que deram erro
         log(f"— Tentando de novo o bloco {n}...")
