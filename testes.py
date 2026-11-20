@@ -15,6 +15,15 @@ def teste_picos():
     assert "socorro [🔊 volume alto +30 dB]" in txt and "sem fala" in txt, txt
 
 
+def teste_alucinacoes():
+    assert motor.eh_alucinacao("Legendas pela comunidade Amara.org")
+    assert motor.eh_alucinacao(" Obrigado por assistir!")
+    assert motor.eh_alucinacao("...")
+    assert not motor.eh_alucinacao("Cara, o chefe me matou de novo")
+    # fala longa de verdade que só menciona a frase continua
+    assert not motor.eh_alucinacao("e aí eu falei pra ele: obrigado por assistir a live inteira, você é brabo demais mano")
+
+
 if __name__ == "__main__":
     for nome, f in list(globals().items()):
         if nome.startswith("teste_"):

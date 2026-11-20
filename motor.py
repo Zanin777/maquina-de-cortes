@@ -198,12 +198,29 @@ def obter_video(fonte: str, log: Log) -> Path:
 # ----------------------------------------------------------------------------
 # 2. Transcrever
 # ----------------------------------------------------------------------------
+# frases que o Whisper "inventa" em silêncio ou música (vêm das legendas com que ele foi treinado)
+ALUCINACOES = ("amara.org", "legendas pela comunidade", "legendado por", "legendas por", "tradução e legendas",
+               "transcrição por", "obrigado por assistir", "obrigada por assistir", "inscreva-se no canal",
+               "não se esqueça de se inscrever", "deixe seu like", "subtítulos realizados", "sous-titres",
+               "thanks for watching", "thank you for watching", "www.", ".com.br")
+
+
+def eh_alucinacao(texto: str) -> bool:
+    """Trecho curto que é só uma dessas frases típicas (fala longa que contém a frase é mantida)."""
+    t = re.sub(r"[^\w\s.\-]", "", texto.lower()).strip()
+    return not re.sub(r"[\W_]", "", t) or (len(t) <= 60 and any(a in t for a in ALUCINACOES))
+
+
+def _limpar_segmentos(segmentos: list[dict]) -> list[dict]:
+    return [s for s in segmentos if not eh_alucinacao(s["texto"])]
+
+
 def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
     # o tamanho entra no nome: blocos de live diferentes nunca reaproveitam a transcrição errada
     cache = video.with_suffix(f".transcricao-{op.modelo_whisper}-{video.stat().st_size}.json")
     if cache.exists():
         log("Usando transcrição já salva (cache).")
-        return json.loads(cache.read_text(encoding="utf-8"))
+        return _limpar_segmentos(json.loads(cache.read_text(encoding="utf-8")))
 
     from faster_whisper import WhisperModel
 
@@ -226,7 +243,14 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
     resultado = []
     total = info.duration or 1
     ultimo_pct = -10
+    descartados = 0
     for s in segs:
+        # mesma regra do Whisper original: provável silêncio e texto com pouca confiança = inventado;
+        # compressão alta = a mesma frase repetida em loop
+        if (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0) or s.compression_ratio > 2.4 \
+                or eh_alucinacao(s.text):
+            descartados += 1
+            continue
         resultado.append({
             "inicio": s.start, "fim": s.end, "texto": s.text.strip(),
             "palavras": [{"inicio": w.start, "fim": w.end, "texto": w.word.strip()}
@@ -237,7 +261,8 @@ def transcrever(video: Path, op: Opcoes, log: Log) -> list[dict]:
             ultimo_pct = pct
             log(f"  transcrição {pct}%")
     cache.write_text(json.dumps(resultado, ensure_ascii=False), encoding="utf-8")
-    log(f"Transcrição pronta: {len(resultado)} trechos.")
+    log(f"Transcrição pronta: {len(resultado)} trechos"
+        + (f" ({descartados} descartados: silêncio/música que o Whisper confundiu com fala)." if descartados else "."))
     return resultado
 
 
