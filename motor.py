@@ -507,7 +507,8 @@ def _caber_na_duracao(dentro: list[Palavra], inicios_frase: list[float], dur_max
     return [w for w in dentro if w.fim <= ini + maximo] or dentro[:1], "fim"
 
 
-def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dict] | None = None) -> list[Corte]:
+def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dict] | None = None,
+                    inicio_min: float = 0.0) -> list[Corte]:
     if not segmentos:
         raise RuntimeError("A transcrição veio vazia — o vídeo tem fala?")
 
@@ -546,6 +547,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "Em 'tags': 5 a 10 termos que as pessoas buscariam no YouTube para achar esse corte. "
         "Ordene do melhor para o pior."
     )
+    if inicio_min > 0:
+        pedido += (f"\n\nO começo deste vídeo, até {inicio_min:.0f}s, repete o fim do bloco anterior da live e "
+                   "já foi cortado: só escolha cortes que comecem depois disso (use esse trecho só como contexto).")
     if op.instrucoes_extras.strip():
         pedido += f"\n\nInstruções extras do usuário: {op.instrucoes_extras.strip()}"
 
@@ -568,6 +572,8 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
             log(f"  (corte '{c['titulo'][:40]}' passou de {op.dur_max}s; encurtado no {onde})")
         ini = max(0.0, dentro[0].inicio - 0.15)
         fim = dentro[-1].fim + 0.35
+        if ini < inicio_min - 1:  # trecho repetido do bloco anterior, que já foi cortado
+            continue
         # evita sobreposição com cortes já aceitos
         if any(ini < o.fim and fim > o.inicio for o in cortes):
             continue
@@ -960,18 +966,19 @@ def alterar_cortes_json(pasta: Path, mudanca: Callable[[list], None]) -> list:
             trava.unlink(missing_ok=True)
 
 
-def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "") -> int:
-    """Transcreve, escolhe e edita os cortes de um arquivo. Retorna quantos cortes saíram."""
+def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "",
+                 inicio_min: float = 0.0) -> list[Corte]:
+    """Transcreve, escolhe e edita os cortes de um arquivo. Retorna os cortes que saíram."""
     segmentos = transcrever(video, op, log)
     if not segmentos:
         log("  (sem fala neste trecho, pulando)")
-        return 0
+        return []
     try:
         picos = picos_de_audio(video, log)
     except Exception as e:  # sem os picos a IA ainda escolhe pela fala
         log(f"  (não consegui medir o volume: {e})")
         picos = []
-    cortes = escolher_cortes(segmentos, op, log, picos)
+    cortes = escolher_cortes(segmentos, op, log, picos, inicio_min)
     pasta.mkdir(parents=True, exist_ok=True)
     for i, c in enumerate(cortes, 1):
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
@@ -1001,7 +1008,7 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
         alterar_cortes_json(pasta, lambda dados: dados.append(r))
         with open(pasta / "legendas_dos_posts.txt", "a", encoding="utf-8") as f:
             f.write(f"{r['arquivo']}\n{r['titulo']}\n{r['descricao']}\n\n")
-    return len(cortes)
+    return cortes
 
 
 # ----------------------------------------------------------------------------
@@ -1131,7 +1138,7 @@ def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = 
     if (pasta / "legendas_dos_posts.txt").exists():
         (pasta / "legendas_dos_posts.txt").unlink()
         (pasta / "cortes.json").unlink(missing_ok=True)
-    n = cortar_video(video, pasta, op, log, fonte=fonte.strip() if eh_link(fonte) else "")
+    n = len(cortar_video(video, pasta, op, log, fonte=fonte.strip() if eh_link(fonte) else ""))
     if not n:
         raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")
     log(f"Pronto! {n} cortes salvos em: {pasta}")
@@ -1183,6 +1190,60 @@ def _iniciar_gravacao(url_live: str, pasta_blocos: Path, rodada: int, op: Opcoes
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+SOBRA_BLOCO_S = 120  # quanto do fim de um bloco da live entra junto no começo do próximo
+
+
+def _juntar_ts(partes: list[Path], destino: Path) -> None:
+    lista = destino.with_suffix(".txt")
+    lista.write_text("".join(f"file '{p.resolve().as_posix()}'\n" for p in partes), encoding="utf-8")
+    try:
+        _run([achar_exe("ffmpeg"), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lista),
+              "-c", "copy", str(destino)], capture_output=True, check=True)
+    finally:
+        lista.unlink(missing_ok=True)
+
+
+class _EmendaDosBlocos:
+    """Corta cada bloco junto com o fim do anterior, para um momento bem na divisa não se perder.
+    Só aceita cortes que começam depois do último corte do bloco anterior (sem repetir)."""
+
+    def __init__(self, pasta_blocos: Path):
+        self.rabo: Path | None = None   # fim do bloco anterior
+        self.livre_desde = 0.0          # segundo, dentro do rabo, onde acabou o último corte já feito
+        self.pasta = pasta_blocos
+
+    def cortar(self, bloco: Path, n: int, pasta: Path, op: Opcoes, log: Log, url: str) -> int:
+        entrada, inicio_min = bloco, 0.0
+        if self.rabo and self.rabo.exists():
+            entrada = self.pasta / f"junto-{n:03d}.ts"
+            _juntar_ts([self.rabo, bloco], entrada)
+            inicio_min = self.livre_desde
+        dur_entrada = _duracao(entrada)
+        try:
+            cortes = cortar_video(entrada, pasta, op, log, prefixo=f"b{n:02d}-", fonte=url, inicio_min=inicio_min)
+        except Exception:
+            self.descartar()  # o bloco vai ser refeito sozinho no final; o próximo começa sem emenda
+            raise
+        finally:
+            if entrada != bloco:
+                entrada.unlink(missing_ok=True)
+        novo = self.pasta / f"fim-anterior-{n:03d}.ts"
+        _run([achar_exe("ffmpeg"), "-v", "error", "-y", "-sseof", f"-{SOBRA_BLOCO_S}", "-i", str(bloco),
+              "-c", "copy", str(novo)], capture_output=True)
+        self.descartar()
+        if novo.exists():
+            # o rabo novo começa em (duração cortada - duração do rabo) dentro do arquivo que foi cortado
+            ultimo_fim = max((c.fim for c in cortes), default=0.0)
+            self.rabo = novo
+            self.livre_desde = max(0.0, ultimo_fim - (dur_entrada - _duracao(novo)))
+        return len(cortes)
+
+    def descartar(self) -> None:
+        if self.rabo:
+            self.rabo.unlink(missing_ok=True)
+        self.rabo, self.livre_desde = None, 0.0
+
+
 def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threading.Event,
                       entrada_teste: list[str] | None = None) -> Path:
     titulo = _nome_arquivo(re.sub(r"\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "", info.get("title") or "live"))
@@ -1201,6 +1262,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
     falhos: list[tuple[int, Path]] = []
     total = 0
     n_bloco = 0
+    emenda = _EmendaDosBlocos(pasta_blocos)
     vigia = {"tamanho": -1, "desde": time.time()}  # detecta gravação travada (sem dados chegando)
 
     def pendentes(gravando: bool) -> list[Path]:
@@ -1232,7 +1294,7 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
             n_bloco += 1
             log(f"— Bloco {n_bloco} fechado ({dur / 60:.0f} min). Cortando...")
             try:
-                total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n_bloco:02d}-", fonte=url)
+                total += emenda.cortar(bloco, n_bloco, pasta, op, log, url)
                 bloco.unlink(missing_ok=True)  # bloco já cortado: libera espaço (~3 GB por hora de live)
             except Exception as e:
                 log(f"  Erro no bloco {n_bloco}: {e}")
@@ -1273,10 +1335,11 @@ def processar_ao_vivo(url: str, info: dict, op: Opcoes, log: Log, parar: threadi
 
         parar.wait(5)
 
+    emenda.descartar()
     for n, bloco in falhos:  # segunda chance para os blocos que deram erro
         log(f"— Tentando de novo o bloco {n}...")
         try:
-            total += cortar_video(bloco, pasta, op, log, prefixo=f"b{n:02d}-", fonte=url)
+            total += len(cortar_video(bloco, pasta, op, log, prefixo=f"b{n:02d}-", fonte=url))
             bloco.unlink(missing_ok=True)
         except Exception as e:
             log(f"  O bloco {n} falhou de novo ({e}). O vídeo dele ficou guardado em: {bloco}")
