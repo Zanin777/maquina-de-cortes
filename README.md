@@ -77,7 +77,8 @@ grava em blocos (padrão: 30 min, ajuste em "Live: cortar a cada") e solta os co
 assim que ele fecha. Clique em **Parar live** para encerrar — o último bloco ainda é cortado.
 Se a conexão cair no meio, ele reconecta sozinho enquanto a live estiver no ar.
 Os cortes saem como `b01-01 ...`, `b02-01 ...` (bloco - número do corte).
-Obs.: um momento que fica bem na divisa entre dois blocos pode ser perdido.
+Cada bloco é cortado junto com os 2 últimos minutos do anterior, então um momento bem na divisa
+entre dois blocos não se perde (e nada que já virou corte é repetido).
 
 Os cortes saem em `cortes\<nome do vídeo>\`, junto com `legendas_dos_posts.txt`
 (título + descrição com hashtags de cada corte, pra colar no post).
