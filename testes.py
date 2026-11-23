@@ -64,17 +64,25 @@ def teste_comecar_perto_do_pico():
 
 def teste_tirar_pausas():
     P = motor.Palavra
-    # fala, 3 s de silêncio, fala, 2 s de silêncio com explosão no jogo, fala
-    palavras = [P(10.0, 10.5, "a"), P(10.6, 11.0, "b"), P(14.0, 14.5, "c"), P(16.5, 17.0, "d")]
-    picos = [{"inicio": 15.0, "fim": 16.0, "db": 20}]
-    trechos = motor.trechos_sem_pausa(palavras, 9.85, 17.35, picos)
-    assert trechos == [(9.85, 11.12), (13.88, 17.35)], trechos  # só o silêncio sem nada some
-    assert motor.trechos_sem_pausa(palavras, 9.85, 17.35) == [(9.85, 11.12), (13.88, 14.62),
-                                                             (16.38, 17.35)]
+    # corte de 30 s numa live de jogo
+    palavras = [P(0.0, 0.5, "a"), P(0.6, 1.0, "b"),
+                P(2.0, 2.5, "c"),     # pausa de 1 s na fala: sai
+                P(10.0, 10.5, "d"),   # 7,5 s quieto = jogando/vendo a cena: fica
+                P(11.5, 12.0, "e"),   # pausa de 1 s com explosão no jogo: fica
+                P(13.5, 14.0, "f"),   # pausa de 1,5 s: sai
+                P(29.0, 29.5, "g")]   # 15 s de gameplay: fica
+    picos = [{"inicio": 10.8, "fim": 11.2, "db": 20}]
+    trechos = motor.trechos_sem_pausa(palavras, 0.0, 30.0, picos)
+    assert trechos == [(0.0, 1.12), (1.88, 12.12), (13.38, 30.0)], trechos
+    tirado = 30 - sum(b - a for a, b in trechos)
+    assert abs(tirado - 2.02) < 1e-9, tirado  # a gameplay quieta não some (antes sumiam 22 s daqui)
+    # nunca tira mais de 20%: corte de 5 s com duas pausas de 1 s -> só uma sai
+    curtas = [P(0.0, 0.5, "a"), P(1.5, 2.0, "b"), P(3.0, 3.5, "c")]
+    assert motor.trechos_sem_pausa(curtas, 0.0, 5.0) == [(0.0, 0.62), (1.38, 5.0)]
     # tempos do original no corte já sem pausas
-    assert motor._mapear_tempo(10.0, trechos) == 10.0 - 9.85
-    assert abs(motor._mapear_tempo(14.0, trechos) - (11.12 - 9.85 + 0.12)) < 1e-9
-    assert motor._mapear_tempo(12.0, trechos) == motor._mapear_tempo(13.88, trechos)  # dentro da pausa
+    assert motor._mapear_tempo(0.5, trechos) == 0.5
+    assert abs(motor._mapear_tempo(2.0, trechos) - (1.12 + 0.12)) < 1e-9
+    assert motor._mapear_tempo(1.5, trechos) == motor._mapear_tempo(1.88, trechos)  # dentro da pausa
     assert abs(motor._mapear_tempo(99, trechos) - sum(b - a for a, b in trechos)) < 1e-9
 
 

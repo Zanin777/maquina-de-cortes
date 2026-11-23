@@ -662,6 +662,10 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         fim = dentro[-1].fim + 0.35
         if ini < inicio_min - 1:  # trecho repetido do bloco anterior, que já foi cortado
             continue
+        minimo = max(6.0, op.dur_min * 0.7)
+        if fim - ini < minimo:  # curto demais para ter começo, meio e fim
+            log(f"  (corte '{c['titulo'][:40]}' descartado: só {fim - ini:.0f}s, mínimo {minimo:.0f}s)")
+            continue
         # evita sobreposição com cortes já aceitos
         if any(ini < o.fim and fim > o.inicio for o in cortes):
             continue
@@ -679,25 +683,34 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
 # ----------------------------------------------------------------------------
 CAM_H, GAME_H = 768, 1152  # layout streamer: webcam em cima (1080x768), jogo embaixo (1080x1152)
 
-PAUSA_MAX = 0.5  # silêncio maior que isso entre duas falas vira corte seco
+PAUSA_MAX = 0.5  # silêncio maior que isso entre duas falas vira corte seco...
+PAUSA_LONGA = 2.0  # ...mas só até isso: silêncio mais longo é o streamer jogando/assistindo, e fica
+MAX_TIRAR_PAUSAS = 0.20  # nunca tira mais que isso do corte em pausas
 FOLGA_PAUSA = 0.12  # quanto de respiro fica antes e depois de cada corte seco
 
 
 def trechos_sem_pausa(palavras: list[Palavra], ini: float, fim: float,
                       picos: list[dict] | None = None) -> list[tuple[float, float]]:
-    """Partes do corte que ficam, tirando os silêncios entre falas. Pausa com pico de volume (explosão,
-    grito, susto no jogo) fica, porque ali está acontecendo alguma coisa."""
-    trechos: list[tuple[float, float]] = []
-    a = ini
+    """Partes do corte que ficam, tirando as pausas curtas da fala (0,5 a 2 s). Fica tudo que pode ser
+    gameplay: silêncio longo (o streamer quieto jogando ou vendo uma cena) e pausa com pico de volume
+    (explosão, grito, susto). No total tira no máximo 20% do corte, começando pelas pausas maiores."""
+    candidatas = []
     for w1, w2 in zip(palavras, palavras[1:]):
         de, ate = w1.fim + FOLGA_PAUSA, w2.inicio - FOLGA_PAUSA
-        if w2.inicio - w1.fim <= PAUSA_MAX or ate <= de:
+        if not PAUSA_MAX < w2.inicio - w1.fim <= PAUSA_LONGA or ate <= de or de <= ini or ate >= fim:
             continue
         if any(p["inicio"] < w2.inicio and p["fim"] > w1.fim for p in picos or []):
             continue
-        if de - a >= 0.2:
-            trechos.append((a, de))
-            a = ate
+        candidatas.append((de, ate))
+    limite, tirado, escolhidas = (fim - ini) * MAX_TIRAR_PAUSAS, 0.0, []
+    for de, ate in sorted(candidatas, key=lambda p: p[0] - p[1]):  # maiores primeiro
+        if tirado + ate - de <= limite:
+            escolhidas.append((de, ate))
+            tirado += ate - de
+    trechos, a = [], ini
+    for de, ate in sorted(escolhidas):
+        trechos.append((a, de))
+        a = ate
     trechos.append((a, fim))
     return trechos
 
@@ -822,7 +835,7 @@ DUR_GANCHO = 2.5  # segundos em que o gancho (pergunta do começo) fica na tela
 
 def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float, de: float = 0.0) -> list[str]:
     """Faixa vermelha na largura toda, com detalhe amarelo em cima, sombra vinho embaixo e texto branco.
-    Aparece de `de` até `dur` (segundos do corte)."""
+    Aparece de `de` até `dur` (segundos do corte), parada: sem animação de entrada."""
     linhas_tit = _quebrar(titulo.upper())
     alt = _altura_faixa(titulo) - 10
     fim = _ass_tempo(dur)
@@ -1004,7 +1017,8 @@ def _entrada_do_corte(trechos: list[tuple[float, float]], base: float, audio: bo
     return ";".join(partes) + f";{rotulos}concat=n={len(trechos)}:v=1:a={int(audio)}[vin]" + ("[ain]" if audio else "")
 
 
-def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -> None:
+def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -> float:
+    """Edita o corte e devolve a duração final do vídeo (já sem as pausas)."""
     vw, vh = dimensoes_video(video)
     trechos = [(corte.inicio, corte.fim)]
     if op.cortar_pausas and len(corte.palavras) > 1:
@@ -1105,6 +1119,7 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
         r = _run(cmd, cwd=tmp, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"FFmpeg falhou:\n{r.stderr[-1500:]}")
+    return dur
 
 
 # ----------------------------------------------------------------------------
@@ -1159,7 +1174,7 @@ def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: 
     log(f"Refazendo '{arquivo}' ({_fmt(inicio)} → {_fmt(fim)})...")
     # renderiza num arquivo à parte: se o vídeo estiver aberto no player, o original continua inteiro
     tmp = pasta / f"refazendo-{arquivo}"
-    renderizar(video, corte, tmp, op, log)
+    duracao = renderizar(video, corte, tmp, op, log)
     try:
         os.replace(tmp, pasta / arquivo)
     except PermissionError:
@@ -1169,7 +1184,7 @@ def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: 
     def mudar(lista):
         for x in lista:
             if x["arquivo"] == arquivo:
-                x.update(inicio=round(inicio, 2), fim=round(fim, 2), duracao=round(fim - inicio, 1),
+                x.update(inicio=round(inicio, 2), fim=round(fim, 2), duracao=round(duracao, 1),
                          titulo=corte.titulo, fala=" ".join(w.texto for w in palavras)[:2000])
     alterar_cortes_json(pasta, mudar)
     log("  pronto.")
@@ -1192,9 +1207,9 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
     for i, c in enumerate(cortes, 1):
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
         log(f"Editando corte {i}/{len(cortes)}: {c.titulo}")
-        renderizar(video, c, pasta / nome, op, log)
+        duracao = renderizar(video, c, pasta / nome, op, log)
         r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao, "tags": c.tags, "fonte": fonte,
-             "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(c.fim - c.inicio, 1),
+             "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(duracao, 1),
              "nota": c.nota, "origem": video.name, "video": str(video.resolve()),
              "inicio": round(c.inicio, 2), "fim": round(c.fim, 2),
              "pico": round(c.pico, 2) if c.pico is not None else None, "gancho": c.gancho}
