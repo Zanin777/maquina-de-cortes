@@ -402,12 +402,13 @@ SCHEMA_CORTES = {
                     "fim": {"type": "number", "description": "segundo de fim"},
                     "pico": {"type": "number", "description": "segundo do ponto alto do corte: a reação (grito, "
                              "risada, 'QUÊ?!'), a punchline ou a cena chocante"},
-                    "titulo": {"type": "string", "description": "título curto e chamativo, até 8 palavras"},
+                    "titulo": {"type": "string", "description": "título curto que cria curiosidade sem contar o "
+                               "final, até 8 palavras"},
                     "gancho": {"type": "string", "description": "texto da tela nos 2 primeiros segundos, até 40 "
                                "caracteres: uma pergunta ou promessa que só se resolve no fim do corte, sem "
                                "entregar o final (ex.: 'espera o que acontece com o tubarão 🦈')"},
                     "descricao": {"type": "string", "description": "legenda do post: 1-2 frases que dão vontade "
-                                  "de assistir + 3 a 5 hashtags (jogo, streamer, tema), sem #shorts"},
+                                  "de assistir sem contar o final + 3 a 5 hashtags (jogo, streamer, tema), sem #shorts"},
                     "tags": {"type": "array", "items": {"type": "string"},
                              "description": "5 a 10 termos de busca do YouTube (sem #)"},
                     "nota": {"type": "integer", "description": "potencial de viralizar de 1 a 10"},
@@ -607,19 +608,23 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "- Corte sem dó: curto e denso vence longo com partes paradas. Um corte de reação rende muito mais "
         "com 20 a 35 segundos, porque é visto até o fim e repetido (isso pesa muito no algoritmo). Só use mais "
         "tempo se a história realmente precisar. Tire falas que não levam à piada.\n"
-        "- Título: até ~60 caracteres, curioso e fiel ao que acontece (sem mentir), em linguagem de internet; "
-        "pode usar 1 emoji. Não comece com o nome do jogo.\n"
+        "- Título: cria curiosidade SEM spoiler. Ele nunca conta o final, a revelação ou a piada, senão "
+        "ninguém tem motivo para assistir até o fim. Ruim: 'Tem BEBÊ no jogo!', 'A Lúcia e o Jason têm um "
+        "FILHO!'. Bom: 'Ninguém esperava ISSO na casa do Jason 😳', 'Ele não acreditou no que a Lúcia fez'. "
+        "Até ~60 caracteres, fiel ao que acontece (sem mentir nem prometer o que não tem), em linguagem de "
+        "internet; pode usar 1 emoji. Não comece com o nome do jogo.\n"
         "- 'nota' é sua aposta honesta de desempenho (1-10); reserve 9-10 para momentos realmente fortes.\n"
         "- Marcas [🔊 volume alto] indicam picos de som (grito, risada, susto, explosão no jogo). São fortes "
         "candidatos a reação, mas confira pelo contexto da fala: música alta ou propaganda também disparam."
     )
     licoes = _licoes_do_canal()
     if licoes:
-        sistema += "\n\n" + licoes
+        sistema += ("\n\n" + licoes + "\n\nUse essas lições para escolher os momentos e o tom, mas a regra do "
+                    "título sem spoiler vale mais: se um exemplo do canal entrega o final no título, não copie isso.")
     pedido = (
         f"Escolha até {op.qtd_cortes} cortes, cada um entre {op.dur_min} e {op.dur_max} segundos. "
         "Use os segundos dos colchetes para 'inicio' e 'fim'. Escreva título e descrição em português do Brasil. "
-        "Na descrição: 1 ou 2 frases que deem vontade de assistir, seguidas de 3 a 5 hashtags relevantes "
+        "Na descrição: 1 ou 2 frases que deem vontade de assistir (sem contar o final), seguidas de 3 a 5 hashtags relevantes "
         "(o jogo, o nome do streamer se aparecer na fala ou no contexto, o tema do momento); não use #shorts. "
         "Em 'tags': 5 a 10 termos que as pessoas buscariam no YouTube para achar esse corte. "
         "Ordene do melhor para o pior."
