@@ -76,6 +76,7 @@ class Corte:
     nota: int
     palavras: list[Palavra] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    pico: float | None = None  # segundo (no vídeo original) do ponto alto: reação, grito, punchline
 
 
 # ----------------------------------------------------------------------------
@@ -397,6 +398,8 @@ SCHEMA_CORTES = {
                 "properties": {
                     "inicio": {"type": "number", "description": "segundo de início"},
                     "fim": {"type": "number", "description": "segundo de fim"},
+                    "pico": {"type": "number", "description": "segundo do ponto alto do corte: a reação (grito, "
+                             "risada, 'QUÊ?!'), a punchline ou a cena chocante"},
                     "titulo": {"type": "string", "description": "título curto e chamativo, até 8 palavras"},
                     "descricao": {"type": "string", "description": "legenda do post: 1-2 frases que dão vontade "
                                   "de assistir + 3 a 5 hashtags (jogo, streamer, tema), sem #shorts"},
@@ -404,7 +407,7 @@ SCHEMA_CORTES = {
                              "description": "5 a 10 termos de busca do YouTube (sem #)"},
                     "nota": {"type": "integer", "description": "potencial de viralizar de 1 a 10"},
                 },
-                "required": ["inicio", "fim", "titulo", "descricao", "nota", "tags"],
+                "required": ["inicio", "fim", "pico", "titulo", "descricao", "nota", "tags"],
                 "additionalProperties": False,
             },
         }
@@ -420,7 +423,7 @@ def _fmt(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:04.1f}" if h else f"{m:02d}:{s:04.1f}"
 
 
-FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 70.1, "titulo": "...", '
+FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 40.1, "pico": 14.0, "titulo": "...", '
                   '"descricao": "... #hashtag #hashtag #hashtag", "nota": 8, "tags": ["termo", "termo"]}]}')
 
 
@@ -544,6 +547,29 @@ def _caber_na_duracao(dentro: list[Palavra], inicios_frase: list[float], dur_max
     return [w for w in dentro if w.fim <= ini + maximo] or dentro[:1], "fim"
 
 
+MAX_ANTES_DO_PICO = 4.0  # o corte começa no máximo isso antes do ponto alto (o resto é preparação)
+
+
+def _comecar_perto_do_pico(dentro: list[Palavra], inicios_frase: list[float], pico: float | None,
+                           minimo: float = 6.0) -> list[Palavra]:
+    """Tira a preparação: o corte passa a começar no início de frase mais próximo antes do pico, sem ficar
+    mais de MAX_ANTES_DO_PICO antes dele. Não mexe se o pico for inválido ou se sobrar menos de `minimo` s."""
+    if pico is None or not dentro or not dentro[0].inicio < pico < dentro[-1].fim:
+        return dentro
+    if pico - dentro[0].inicio <= MAX_ANTES_DO_PICO:
+        return dentro
+    limite = pico - MAX_ANTES_DO_PICO
+    frases = [t for t in inicios_frase if limite <= t <= pico]
+    # sem início de frase na janela: começa na primeira palavra dentro dela
+    novo = frases[0] if frases else next((w.inicio for w in dentro if w.inicio >= limite), None)
+    if novo is None:
+        return dentro
+    resto = [w for w in dentro if w.inicio >= novo - 0.3]
+    if not resto or dentro[-1].fim - resto[0].inicio < minimo:
+        return dentro
+    return resto
+
+
 def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dict] | None = None,
                     inicio_min: float = 0.0) -> list[Corte]:
     if not segmentos:
@@ -559,8 +585,10 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "Cada corte precisa fazer sentido sozinho para quem não viu o vídeo: começa num gancho forte "
         "(sem começar no meio de uma frase) e termina quando a ideia fecha. Cortes não podem se sobrepor.\n\n"
         "O que faz um Short performar (use como critério):\n"
-        "- Os 2 primeiros segundos decidem tudo: comece na frase mais intrigante, engraçada ou surpreendente, "
-        "não na preparação. Evite começar com 'então', 'bom', silêncio ou explicação.\n"
+        "- Os 2 primeiros segundos decidem tudo: quem não vê nada acontecendo em 1-2 s passa para o próximo. "
+        "Comece NO pico ou no máximo 2-3 s antes dele: a reação (grito, risada, 'QUÊ?!'), a cena chocante ou a "
+        "frase mais forte. Corte toda a preparação: menu, pausa, carregamento, 'deixa eu ver aqui', 'então', "
+        "'bom', explicação. Informe em 'pico' o segundo desse ponto alto.\n"
         "- Um momento só por corte, com começo, clímax e fim; termine logo depois da punchline ou da reação, "
         "sem 'rabo' depois do ponto alto.\n"
         "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
@@ -604,6 +632,11 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         dentro = [w for w in palavras if w.inicio >= ini - 0.5 and w.fim <= fim + 1.5]
         if not dentro:
             continue
+        pico = float(c["pico"]) if c.get("pico") is not None else None
+        antes = dentro[0].inicio
+        dentro = _comecar_perto_do_pico(dentro, inicios_frase, pico)
+        if dentro[0].inicio - antes > 1:
+            log(f"  (corte '{c['titulo'][:40]}': tirei {dentro[0].inicio - antes:.0f}s de preparação antes do pico)")
         dentro, onde = _caber_na_duracao(dentro, inicios_frase, op.dur_max)
         if onde:
             log(f"  (corte '{c['titulo'][:40]}' passou de {op.dur_max}s; encurtado no {onde})")
@@ -615,7 +648,7 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         if any(ini < o.fim and fim > o.inicio for o in cortes):
             continue
         cortes.append(Corte(ini, fim, c["titulo"].strip(), c["descricao"].strip(),
-                            int(c["nota"]), dentro, tags=list(c.get("tags") or [])[:15]))
+                            int(c["nota"]), dentro, tags=list(c.get("tags") or [])[:15], pico=pico))
     log(f"A IA escolheu {len(cortes)} cortes.")
     for i, c in enumerate(cortes, 1):
         log(f"  {i}. [{_fmt(c.inicio)} → {_fmt(c.fim)}] nota {c.nota} — {c.titulo}")
@@ -1056,7 +1089,8 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
         r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao, "tags": c.tags, "fonte": fonte,
              "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(c.fim - c.inicio, 1),
              "nota": c.nota, "origem": video.name, "video": str(video.resolve()),
-             "inicio": round(c.inicio, 2), "fim": round(c.fim, 2)}
+             "inicio": round(c.inicio, 2), "fim": round(c.fim, 2),
+             "pico": round(c.pico, 2) if c.pico is not None else None}
         if op.publicar_youtube and op.revisar_antes:
             pass  # vai para a tela de revisão no final; nada sobe sem você aprovar
         elif op.publicar_youtube:

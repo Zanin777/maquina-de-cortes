@@ -41,6 +41,24 @@ def teste_encurtar_pelo_comeco():
     assert motor._caber_na_duracao(palavras[:30], [0, 10], 59) == (palavras[:30], "")
 
 
+def teste_comecar_perto_do_pico():
+    P = motor.Palavra
+    palavras = [P(t, t + 0.8, f"w{t}") for t in range(0, 40)]  # 40 s de fala
+    frases = [0, 10, 18, 23, 30]
+    # pico aos 25 s: começa na frase dos 23 s (dentro dos 4 s antes do pico), não no menu lá do 0
+    resto = motor._comecar_perto_do_pico(palavras, frases, 25.0)
+    assert resto[0].inicio == 23 and resto[-1].inicio == 39, resto[0]
+    # sem início de frase na janela: começa na 1ª palavra que fica até 4 s antes do pico
+    resto = motor._comecar_perto_do_pico(palavras, [0], 25.0)
+    assert resto[0].inicio == 21, resto[0]
+    # pico já perto do começo, pico fora do corte ou sem pico: não mexe
+    assert motor._comecar_perto_do_pico(palavras, frases, 3.0) == palavras
+    assert motor._comecar_perto_do_pico(palavras, frases, 99.0) == palavras
+    assert motor._comecar_perto_do_pico(palavras, frases, None) == palavras
+    # sobraria menos de 6 s depois do pico: não mexe (o corte ficaria curto demais)
+    assert motor._comecar_perto_do_pico(palavras, frases + [36], 38.0) == palavras
+
+
 def teste_publicar_respeita_revisao():
     import publicador
     enviados = []
