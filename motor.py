@@ -39,7 +39,8 @@ MODELO_CLAUDE = "claude-opus-5-5"
 # ----------------------------------------------------------------------------
 @dataclass
 class Opcoes:
-    qtd_cortes: int = 5
+    qtd_cortes: int = 5  # vídeo: sai exatamente essa quantidade
+    cortes_por_bloco: int = 3  # live: até essa quantidade a cada bloco
     dur_min: int = 15
     dur_max: int = 35  # Short curto é visto até o fim e repetido; nunca passe de 59 s (direitos autorais)
     modelo_whisper: str = "small"
@@ -622,7 +623,8 @@ def _comecar_perto_do_pico(dentro: list[Palavra], inicios_frase: list[float], pi
 
 
 def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dict] | None = None,
-                    inicio_min: float = 0.0) -> list[Corte]:
+                    inicio_min: float = 0.0, exatos: bool = False) -> list[Corte]:
+    """A IA escolhe os cortes. `exatos`: tem que sair exatamente op.qtd_cortes (vídeo); senão é "até" (live)."""
     if not segmentos:
         raise RuntimeError("A transcrição veio vazia — o vídeo tem fala?")
 
@@ -666,38 +668,24 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
     if licoes:
         sistema += ("\n\n" + licoes + "\n\nUse essas lições para escolher os momentos e o tom, mas a regra do "
                     "título sem spoiler vale mais: se um exemplo do canal entrega o final no título, não copie isso.")
-    pedido = (
-        f"Escolha até {op.qtd_cortes} cortes, cada um entre {op.dur_min} e {op.dur_max} segundos. "
-        "Use os segundos dos colchetes para 'inicio' e 'fim'. Escreva título e descrição em português do Brasil. "
-        "Na descrição: 1 ou 2 frases que deem vontade de assistir (sem contar o final), seguidas de 3 a 5 hashtags relevantes "
-        "(o jogo, o nome do streamer se aparecer na fala ou no contexto, o tema do momento); não use #shorts. "
-        "Em 'tags': 5 a 10 termos que as pessoas buscariam no YouTube para achar esse corte. "
-        "Ordene do melhor para o pior."
-    )
-    if inicio_min > 0:
-        pedido += (f"\n\nO começo deste vídeo, até {inicio_min:.0f}s, repete o fim do bloco anterior da live e "
-                   "já foi cortado: só escolha cortes que comecem depois disso (use esse trecho só como contexto).")
-    if op.instrucoes_extras.strip():
-        pedido += f"\n\nInstruções extras do usuário: {op.instrucoes_extras.strip()}"
-
-    conteudo = f"<transcricao>\n{transcricao}\n</transcricao>\n\n{pedido}"
-    dados = perguntar_ia(sistema, conteudo, op, log, SCHEMA_CORTES, FORMATO_CORTES, "escolher os melhores momentos")
-
     # todas as palavras com tempo, para alinhar os cortes certinho
     palavras = [Palavra(w["inicio"], w["fim"], w["texto"]) for s in segmentos for w in s["palavras"]]
     inicios_frase = sorted(s["inicio"] for s in segmentos)
+    minimo = max(6.0, op.dur_min * 0.7)
     cortes: list[Corte] = []
-    for c in dados["cortes"]:
+
+    def aceitar(c: dict) -> Corte | None:
+        """Alinha o corte da IA nas palavras e aplica as regras; None se ele não serve."""
         ini, fim = float(c["inicio"]), float(c["fim"])
         if fim <= ini:
-            continue
+            return None
         dentro = [w for w in palavras if w.inicio >= ini - 0.5 and w.fim <= fim + 1.5]
         if not dentro:
-            continue
+            return None
         pico = float(c["pico"]) if c.get("pico") is not None else None
         antes = dentro[0].inicio
         # tirar a preparação não pode deixar o corte bem abaixo da duração mínima pedida
-        dentro = _comecar_perto_do_pico(dentro, inicios_frase, pico, minimo=max(6.0, op.dur_min * 0.7))
+        dentro = _comecar_perto_do_pico(dentro, inicios_frase, pico, minimo=minimo)
         if dentro[0].inicio - antes > 1:
             log(f"  (corte '{c['titulo'][:40]}': tirei {dentro[0].inicio - antes:.0f}s de preparação antes do pico)")
         dentro, onde = _caber_na_duracao(dentro, inicios_frase, op.dur_max)
@@ -706,17 +694,56 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         ini = max(0.0, dentro[0].inicio - 0.15)
         fim = dentro[-1].fim + 0.35
         if ini < inicio_min - 1:  # trecho repetido do bloco anterior, que já foi cortado
-            continue
-        minimo = max(6.0, op.dur_min * 0.7)
+            return None
         if fim - ini < minimo:  # curto demais para ter começo, meio e fim
             log(f"  (corte '{c['titulo'][:40]}' descartado: só {fim - ini:.0f}s, mínimo {minimo:.0f}s)")
-            continue
-        # evita sobreposição com cortes já aceitos
-        if any(ini < o.fim and fim > o.inicio for o in cortes):
-            continue
-        cortes.append(Corte(ini, fim, c["titulo"].strip(), c["descricao"].strip(),
-                            int(c["nota"]), dentro, tags=list(c.get("tags") or [])[:15], pico=pico,
-                            gancho=str(c.get("gancho") or "").strip()))
+            return None
+        if any(ini < o.fim and fim > o.inicio for o in cortes):  # sobrepõe um corte já aceito
+            return None
+        return Corte(ini, fim, c["titulo"].strip(), c["descricao"].strip(), int(c["nota"]), dentro,
+                     tags=list(c.get("tags") or [])[:15], pico=pico, gancho=str(c.get("gancho") or "").strip())
+
+    # vídeo: a quantidade pedida exata. A IA escolhe alguns a mais de reserva (alguns caem nas regras acima)
+    # e, se ainda faltar, é chamada de novo só para os que faltam. Live: até a quantidade, por bloco.
+    alvo = op.qtd_cortes
+    for rodada in range(3 if exatos else 1):
+        falta = alvo - len(cortes)
+        if falta <= 0:
+            break
+        pedir = falta + (max(2, (falta + 1) // 2) if exatos else 0)
+        pedido = (
+            f"Escolha {'exatamente' if exatos else 'até'} {pedir} cortes, cada um entre {op.dur_min} e "
+            f"{op.dur_max} segundos. "
+            "Use os segundos dos colchetes para 'inicio' e 'fim'. Escreva título e descrição em português do Brasil. "
+            "Na descrição: 1 ou 2 frases que deem vontade de assistir (sem contar o final), seguidas de 3 a 5 hashtags relevantes "
+            "(o jogo, o nome do streamer se aparecer na fala ou no contexto, o tema do momento); não use #shorts. "
+            "Em 'tags': 5 a 10 termos que as pessoas buscariam no YouTube para achar esse corte. "
+            "Ordene do melhor para o pior."
+        )
+        if exatos:
+            pedido += (" Analise o vídeo inteiro, do começo ao fim, e espalhe a escolha pelos melhores momentos de "
+                       "todo ele, não só do começo.")
+        if cortes:
+            pedido += ("\n\nEstes trechos já viraram corte; não repita nem sobreponha: "
+                       + "; ".join(f"{c.inicio:.0f}s a {c.fim:.0f}s ({c.titulo})" for c in cortes))
+        if inicio_min > 0:
+            pedido += (f"\n\nO começo deste vídeo, até {inicio_min:.0f}s, repete o fim do bloco anterior da live e "
+                       "já foi cortado: só escolha cortes que comecem depois disso (use esse trecho só como contexto).")
+        if op.instrucoes_extras.strip():
+            pedido += f"\n\nInstruções extras do usuário: {op.instrucoes_extras.strip()}"
+
+        conteudo = f"<transcricao>\n{transcricao}\n</transcricao>\n\n{pedido}"
+        tarefa = "escolher os melhores momentos" if not cortes else f"escolher mais {falta} cortes"
+        dados = perguntar_ia(sistema, conteudo, op, log, SCHEMA_CORTES, FORMATO_CORTES, tarefa)
+        for c in dados["cortes"]:
+            if len(cortes) >= alvo:
+                break
+            novo = aceitar(c)
+            if novo:
+                cortes.append(novo)
+    if exatos and len(cortes) < alvo:
+        log(f"⚠ Pediu {alvo} cortes, mas só {len(cortes)} trechos deste vídeo passaram nas regras "
+            f"(duração mínima de {minimo:.0f}s, sem sobrepor). Vídeo curto ou com pouca fala?")
     log(f"A IA escolheu {len(cortes)} cortes.")
     for i, c in enumerate(cortes, 1):
         log(f"  {i}. [{_fmt(c.inicio)} → {_fmt(c.fim)}] nota {c.nota} — {c.titulo}")
@@ -1270,7 +1297,7 @@ def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: 
 
 
 def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "",
-                 inicio_min: float = 0.0, link: str = "") -> list[Corte]:
+                 inicio_min: float = 0.0, link: str = "", exatos: bool = False) -> list[Corte]:
     """Transcreve, escolhe e edita os cortes de um arquivo. Retorna os cortes que saíram.
     Com `link`, `video` é só o áudio: cada corte é editado a partir do trecho baixado do link."""
     segmentos = transcrever(video, op, log)
@@ -1282,7 +1309,7 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
     except Exception as e:  # sem os picos a IA ainda escolhe pela fala
         log(f"  (não consegui medir o volume: {e})")
         picos = []
-    cortes = escolher_cortes(segmentos, op, log, picos, inicio_min)
+    cortes = escolher_cortes(segmentos, op, log, picos, inicio_min, exatos=exatos)
     pasta.mkdir(parents=True, exist_ok=True)
     for i, c in enumerate(cortes, 1):
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
@@ -1447,24 +1474,33 @@ def _pasta_livre(pasta: Path) -> Path:
     return pasta
 
 
-def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = None) -> Path:
+def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = None,
+              modo: str = "video") -> Path:
+    """modo "video": link de vídeo (ou arquivo do PC), analisado inteiro, sai exatamente op.qtd_cortes.
+    modo "live": link de uma live ao vivo, cortada em blocos enquanto acontece."""
     checar_caminho()
     achar_exe("ffmpeg")
     _aprender_se_preciso(op, log)
     parar = parar or threading.Event()
-    if eh_link(fonte):
+    fonte = fonte.strip().strip('"')
+    if modo == "live":
+        if not eh_link(fonte):
+            raise RuntimeError("Na área Live, cole o link de uma live (YouTube, Twitch...).")
         info = info_do_link(fonte)
-        if info.get("is_live"):
-            return processar_ao_vivo(fonte, info, op, log, parar)
+        if not info.get("is_live"):
+            raise RuntimeError("Esse link não está ao vivo agora. Para um vídeo já gravado, use a área Vídeo.")
+        return processar_ao_vivo(fonte, info, replace(op, qtd_cortes=op.cortes_por_bloco), log, parar)
     if eh_link(fonte):
+        if info_do_link(fonte).get("is_live"):
+            raise RuntimeError("Esse link é de uma live ao vivo. Use a área Live, que corta enquanto ela acontece.")
         # não baixa o vídeo inteiro: só o áudio agora e, depois, só o trecho de cada corte
         audio = baixar_audio(fonte, log)
         pasta = _pasta_livre(PASTA_SAIDA / _nome_arquivo(audio.name.removesuffix(audio.suffix).removesuffix(".audio")))
-        n = len(cortar_video(audio, pasta, op, log, fonte=fonte.strip(), link=fonte.strip()))
+        n = len(cortar_video(audio, pasta, op, log, fonte=fonte, link=fonte, exatos=True))
     else:
         video = obter_video(fonte, log)
         pasta = _pasta_livre(PASTA_SAIDA / _nome_arquivo(video.stem))
-        n = len(cortar_video(video, pasta, op, log))
+        n = len(cortar_video(video, pasta, op, log, exatos=True))
     if not n:
         raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")
     log(f"Pronto! {n} cortes salvos em: {pasta}")

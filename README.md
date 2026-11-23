@@ -19,9 +19,12 @@ entrega cortes prontos para TikTok/Reels/Shorts.
 ## Rodar pelo código-fonte (opcional)
 Para quem prefere rodar o código em vez do .exe (para gerar o .exe: `gerar_exe.bat`):
 1. Dê dois cliques em **iniciar.bat** (na 1ª vez ele instala tudo, demora alguns minutos).
-2. Cole um link ou clique em **Escolher arquivo...**
-3. Escolha como usar a IA (veja abaixo).
-4. Clique em **Fazer cortes**.
+2. Escolha como usar a IA (veja abaixo).
+3. A janela tem duas áreas:
+   - **Vídeo** (vídeo já gravado): cole o link ou clique em **Escolher arquivo...**, escolha a quantidade de
+     cortes e clique em **Fazer cortes**. A IA analisa o vídeo inteiro e entrega **exatamente** essa quantidade
+     (se o vídeo for curto ou com pouca fala para isso, o registro avisa). O link não é baixado inteiro.
+   - **Live** (live acontecendo agora): cole o link da live e clique em **Iniciar live** (veja "Live ao vivo").
 
 ## IA: assinatura Pro ou chave de API
 - **Assinatura Claude Pro/Max (sem custo extra):** instale o Claude Code e faça login uma vez
@@ -80,9 +83,10 @@ Publique só conteúdo que você tem direito de usar (cortes de lives de terceir
 do streamer, senão o canal pode levar reivindicação de direitos autorais ou strike).
 
 ## Live ao vivo
-Cole o link de uma live **que está acontecendo** (YouTube, Twitch...). O programa percebe que é ao vivo,
-grava em blocos (padrão: 30 min, ajuste em "Live: cortar a cada") e solta os cortes de cada bloco
-assim que ele fecha. Clique em **Parar live** para encerrar — o último bloco ainda é cortado.
+Na área **Live**, cole o link de uma live **que está acontecendo** (YouTube, Twitch...) e clique em
+**Iniciar live**. O programa grava em blocos (ajuste em "Cortar a cada X min") e solta até "N cortes por
+bloco" assim que cada bloco fecha. Clique em **Parar live** para encerrar — o último bloco ainda é cortado.
+Link de vídeo já gravado na área Live (ou de live na área Vídeo) é avisado na hora.
 Se a conexão cair no meio, ele reconecta sozinho enquanto a live estiver no ar.
 Os cortes saem como `b01-01 ...`, `b02-01 ...` (bloco - número do corte).
 Cada bloco é cortado junto com os 2 últimos minutos do anterior, então um momento bem na divisa

@@ -28,57 +28,86 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Máquina de Cortes")
-        self.geometry("840x800")
-        self.minsize(640, 560)
+        # cabe em telas pequenas (ex.: 1366x768): em tela baixa a janela já abre maximizada
+        alto = self.winfo_screenheight()
+        self.geometry(f"880x{min(900, alto - 80)}")
+        self.minsize(700, min(640, alto - 120))
+        if alto < 900:
+            self.state("zoomed")
         self.fila: queue.Queue = queue.Queue()
         self.pasta_saida: Path | None = None
         cfg = carregar_config()
 
-        pad = {"padx": 10, "pady": 4}
-        frm = ttk.Frame(self, padding=12)
+        pad = {"padx": 10, "pady": 2}
+        frm = ttk.Frame(self, padding=(12, 6))
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="Máquina de Cortes", font=("Segoe UI", 16, "bold")).grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(frm, text="Máquina de Cortes", font=("Segoe UI", 14, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 2))
 
-        # Fonte
-        ttk.Label(frm, text="Vídeo ou link:").grid(row=1, column=0, sticky="w", **pad)
+        # Vídeo: link (não é baixado) ou arquivo do PC; a IA analisa o vídeo inteiro
+        vid = ttk.LabelFrame(frm, text="🎬  Vídeo — a IA analisa o vídeo inteiro (o link não é baixado)", padding=8)
+        vid.grid(row=1, column=0, columnspan=3, sticky="ew", **pad)
+        vid.columnconfigure(1, weight=1)
+        ttk.Label(vid, text="Link ou arquivo:").grid(row=0, column=0, sticky="w")
         self.fonte = tk.StringVar()
-        ttk.Entry(frm, textvariable=self.fonte).grid(row=1, column=1, sticky="ew", **pad)
-        ttk.Button(frm, text="Escolher arquivo...", command=self.escolher).grid(row=1, column=2, **pad)
+        ttk.Entry(vid, textvariable=self.fonte).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Button(vid, text="Escolher arquivo...", command=self.escolher).grid(row=0, column=2)
+        linha_v = ttk.Frame(vid)
+        linha_v.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self.qtd = tk.IntVar(value=cfg.get("qtd_cortes", 5))
+        ttk.Label(linha_v, text="Quantidade de cortes:").pack(side="left")
+        ttk.Spinbox(linha_v, from_=1, to=50, width=4, textvariable=self.qtd).pack(side="left", padx=4)
+        ttk.Label(linha_v, text="(exatamente essa quantidade)", foreground="#666").pack(side="left")
+        self.bt_ir = ttk.Button(linha_v, text="▶  Fazer cortes", command=lambda: self.iniciar("video"))
+        self.bt_ir.pack(side="right")
+
+        # Live: corta em blocos enquanto acontece
+        lv = ttk.LabelFrame(frm, text="🔴  Live — corta em blocos enquanto a live acontece", padding=8)
+        lv.grid(row=2, column=0, columnspan=3, sticky="ew", **pad)
+        lv.columnconfigure(1, weight=1)
+        ttk.Label(lv, text="Link da live:").grid(row=0, column=0, sticky="w")
+        self.fonte_live = tk.StringVar()
+        ttk.Entry(lv, textvariable=self.fonte_live).grid(row=0, column=1, columnspan=2, sticky="ew", padx=6)
+        linha_l = ttk.Frame(lv)
+        linha_l.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        self.bloco = tk.IntVar(value=cfg.get("bloco_min", 30))
+        self.qtd_live = tk.IntVar(value=cfg.get("cortes_por_bloco", 3))
+        ttk.Label(linha_l, text="Cortar a cada").pack(side="left")
+        ttk.Spinbox(linha_l, from_=5, to=120, width=4, textvariable=self.bloco).pack(side="left", padx=4)
+        ttk.Label(linha_l, text="min,   até").pack(side="left")
+        ttk.Spinbox(linha_l, from_=1, to=20, width=4, textvariable=self.qtd_live).pack(side="left", padx=4)
+        ttk.Label(linha_l, text="cortes por bloco").pack(side="left")
+        self.bt_parar = ttk.Button(linha_l, text="■  Parar live", command=self.parar_live, state="disabled")
+        self.bt_parar.pack(side="right")
+        self.bt_live = ttk.Button(linha_l, text="●  Iniciar live", command=lambda: self.iniciar("live"))
+        self.bt_live.pack(side="right", padx=6)
 
         # Chave
-        ttk.Label(frm, text="Chave da API (opcional):").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Chave da API (opcional):").grid(row=3, column=0, sticky="w", **pad)
         self.chave = tk.StringVar(value=cfg.get("api_key", ""))
-        ttk.Entry(frm, textvariable=self.chave, show="•").grid(row=2, column=1, columnspan=2, sticky="ew", **pad)
+        ttk.Entry(frm, textvariable=self.chave, show="•").grid(row=3, column=1, columnspan=2, sticky="ew", **pad)
 
-        # Números
+        # Números (valem para os dois)
         nums = ttk.Frame(frm)
-        nums.grid(row=3, column=0, columnspan=3, sticky="w", **pad)
-        self.qtd = tk.IntVar(value=cfg.get("qtd_cortes", 5))
+        nums.grid(row=4, column=0, columnspan=3, sticky="w", **pad)
         # 25-59 s era o padrão antigo: vira o novo (cortes curtos retêm mais); valores escolhidos à mão ficam
         padrao_antigo = cfg.get("dur_min") == 25 and cfg.get("dur_max") == 59
         self.dmin = tk.IntVar(value=15 if padrao_antigo else cfg.get("dur_min", 15))
         self.dmax = tk.IntVar(value=35 if padrao_antigo else cfg.get("dur_max", 35))
         self.whisper = tk.StringVar(value=cfg.get("modelo_whisper", "small"))
-        ttk.Label(nums, text="Cortes:").pack(side="left")
-        ttk.Spinbox(nums, from_=1, to=30, width=4, textvariable=self.qtd).pack(side="left", padx=(4, 14))
-        ttk.Label(nums, text="Duração (s):").pack(side="left")
+        ttk.Label(nums, text="Duração de cada corte (s):").pack(side="left")
         ttk.Spinbox(nums, from_=10, to=180, width=4, textvariable=self.dmin).pack(side="left", padx=4)
         ttk.Label(nums, text="a").pack(side="left")
         ttk.Spinbox(nums, from_=15, to=600, width=4, textvariable=self.dmax).pack(side="left", padx=(4, 14))
         ttk.Label(nums, text="Precisão da transcrição:").pack(side="left")
         ttk.Combobox(nums, textvariable=self.whisper, width=9, state="readonly",
                      values=["tiny", "base", "small", "medium", "large-v3"]).pack(side="left", padx=4)
-        self.bloco = tk.IntVar(value=cfg.get("bloco_min", 30))
-        ttk.Label(nums, text="   Live: cortar a cada").pack(side="left")
-        ttk.Spinbox(nums, from_=5, to=120, width=4, textvariable=self.bloco).pack(side="left", padx=4)
-        ttk.Label(nums, text="min").pack(side="left")
 
         # Edição
         ed = ttk.LabelFrame(frm, text="Edição", padding=8)
-        ed.grid(row=4, column=0, columnspan=3, sticky="ew", **pad)
+        ed.grid(row=5, column=0, columnspan=3, sticky="ew", **pad)
         self.vertical = tk.BooleanVar(value=cfg.get("vertical", True))
         self.legendas = tk.BooleanVar(value=cfg.get("legendas", True))
         self.zoom = tk.BooleanVar(value=cfg.get("zoom", True))
@@ -89,7 +118,7 @@ class App(tk.Tk):
             ttk.Checkbutton(ed, text=txt, variable=var).pack(side="left", padx=8)
 
         lay = ttk.Frame(frm)
-        lay.grid(row=5, column=0, columnspan=3, sticky="w", **pad)
+        lay.grid(row=6, column=0, columnspan=3, sticky="w", **pad)
         ttk.Label(lay, text="Layout:").pack(side="left")
         self.layouts = {"Streamer (webcam em cima, jogo embaixo)": "streamer", "Normal (um quadro só)": "normal"}
         nome_atual = next((k for k, v in self.layouts.items() if v == cfg.get("layout", "streamer")),
@@ -106,7 +135,7 @@ class App(tk.Tk):
 
         # YouTube Shorts
         yt = ttk.LabelFrame(frm, text="YouTube Shorts", padding=8)
-        yt.grid(row=6, column=0, columnspan=3, sticky="ew", **pad)
+        yt.grid(row=7, column=0, columnspan=3, sticky="ew", **pad)
         self.publicar = tk.BooleanVar(value=cfg.get("publicar_youtube", False))
         ttk.Checkbutton(yt, text="Publicar automaticamente", variable=self.publicar).pack(side="left")
         self.modos_yt = {"Público na hora": "publico", "Agendado (fila)": "agendado",
@@ -127,19 +156,15 @@ class App(tk.Tk):
         self.yt_txt = tk.StringVar(value="conectado" if publicador.conectado() else "não conectado")
         ttk.Label(yt, textvariable=self.yt_txt, foreground="#666").pack(side="left")
 
-        ttk.Label(frm, text="Instruções para a IA (opcional):").grid(row=7, column=0, columnspan=3, sticky="w", **pad)
+        ttk.Label(frm, text="Instruções para a IA (opcional):").grid(row=8, column=0, columnspan=3, sticky="w", **pad)
         self.extras = tk.StringVar(value=cfg.get("instrucoes_extras", ""))
-        ttk.Entry(frm, textvariable=self.extras).grid(row=8, column=0, columnspan=3, sticky="ew", **pad)
+        ttk.Entry(frm, textvariable=self.extras).grid(row=9, column=0, columnspan=3, sticky="ew", **pad)
 
         # Botões
         bts = ttk.Frame(frm)
-        bts.grid(row=9, column=0, columnspan=3, sticky="ew", pady=8)
-        self.bt_ir = ttk.Button(bts, text="▶  Fazer cortes", command=self.iniciar)
-        self.bt_ir.pack(side="left", padx=10)
-        self.bt_parar = ttk.Button(bts, text="■  Parar live", command=self.parar_live, state="disabled")
-        self.bt_parar.pack(side="left", padx=(0, 10))
+        bts.grid(row=10, column=0, columnspan=3, sticky="ew", pady=4)
         self.bt_pasta = ttk.Button(bts, text="Abrir pasta dos cortes", command=self.abrir_pasta)
-        self.bt_pasta.pack(side="left")
+        self.bt_pasta.pack(side="left", padx=(10, 0))
         ttk.Button(bts, text="✔ Revisar cortes...", command=self.escolher_revisao).pack(side="left", padx=(10, 0))
         ttk.Button(bts, text="▲  Publicar cortes já feitos...", command=self.publicar_feitos).pack(side="left", padx=10)
         ttk.Button(bts, text="🧠 Aprender com o canal", command=self.aprender_canal).pack(side="left")
@@ -148,15 +173,16 @@ class App(tk.Tk):
         self.barra.pack(side="right", padx=10)
 
         # Log
-        self.log_txt = tk.Text(frm, height=14, wrap="word", font=("Consolas", 9),
+        self.log_txt = tk.Text(frm, height=6, wrap="word", font=("Consolas", 9),
                                bg="#111", fg="#ddd", insertbackground="#ddd")
-        self.log_txt.grid(row=10, column=0, columnspan=3, sticky="nsew", padx=10, pady=4)
-        frm.rowconfigure(10, weight=1)
+        self.log_txt.grid(row=11, column=0, columnspan=3, sticky="nsew", padx=10, pady=4)
+        frm.rowconfigure(11, weight=1)
 
         self.after(100, self.ler_fila)
         self.publicando = False
         self.after(5000, self.conferir_fila_youtube)
-        self.log("Cole um link (YouTube, Twitch...) ou escolha um vídeo do PC e clique em Fazer cortes.")
+        self.log("Vídeo já gravado: cole o link (ou escolha um arquivo) em Vídeo e clique em Fazer cortes.")
+        self.log("Live acontecendo agora: cole o link em Live e clique em Iniciar live.")
 
     # ------------------------------------------------------------------
     def escolher(self):
@@ -191,6 +217,7 @@ class App(tk.Tk):
             elif tipo == "fim":
                 self.barra.stop()
                 self.bt_ir.config(state="normal")
+                self.bt_live.config(state="normal")
                 self.bt_parar.config(state="disabled")
                 if isinstance(valor, Path):
                     self.pasta_saida = valor
@@ -204,7 +231,7 @@ class App(tk.Tk):
 
     def opcoes(self) -> motor.Opcoes:
         return motor.Opcoes(
-            qtd_cortes=self.qtd.get(), dur_min=self.dmin.get(), dur_max=self.dmax.get(),
+            qtd_cortes=self.qtd.get(), cortes_por_bloco=self.qtd_live.get(), dur_min=self.dmin.get(), dur_max=self.dmax.get(),
             modelo_whisper=self.whisper.get(), vertical=self.vertical.get(),
             legendas=self.legendas.get(), zoom=self.zoom.get(), titulo=self.titulo.get(),
             cortar_pausas=self.cortar_pausas.get(), api_key=self.chave.get(), instrucoes_extras=self.extras.get(), bloco_min=self.bloco.get(),
@@ -446,7 +473,7 @@ class App(tk.Tk):
         self.log("Webcam: voltando para a detecção automática do rosto.")
 
     def marcar_webcam(self):
-        fonte = self.fonte.get().strip()
+        fonte = self.fonte_live.get().strip() or self.fonte.get().strip()
         if not fonte:
             messagebox.showwarning("Falta o vídeo", "Cole o link da live (ou escolha um vídeo) para eu pegar uma imagem.")
             return
@@ -514,10 +541,17 @@ class App(tk.Tk):
         self.bt_parar.config(state="disabled")
         self.log("Pedido de parada recebido — terminando o último bloco...")
 
-    def iniciar(self):
-        fonte = self.fonte.get().strip()
+    def iniciar(self, modo: str = "video"):
+        """modo "video": área Vídeo (exatamente N cortes do vídeo inteiro). "live": área Live (blocos)."""
+        fonte = (self.fonte_live if modo == "live" else self.fonte).get().strip()
         if not fonte:
-            messagebox.showwarning("Falta o vídeo", "Cole um link ou escolha um arquivo.")
+            if modo == "live":
+                messagebox.showwarning("Falta a live", "Cole o link da live na área Live.")
+            else:
+                messagebox.showwarning("Falta o vídeo", "Cole um link ou escolha um arquivo na área Vídeo.")
+            return
+        if modo == "live" and not motor.eh_link(fonte):
+            messagebox.showwarning("Falta a live", "Na área Live, cole o link da live (YouTube, Twitch...).")
             return
         if not motor.tem_ffmpeg():
             if not messagebox.askyesno("Falta o FFmpeg",
@@ -545,8 +579,9 @@ class App(tk.Tk):
         self.salvar_cfg()
 
         self.bt_ir.config(state="disabled")
+        self.bt_live.config(state="disabled")
         self.parar.clear()
-        if motor.eh_link(fonte):
+        if modo == "live":
             self.bt_parar.config(state="normal")
         self.barra.start(12)
         self.log("-" * 60)
@@ -555,7 +590,7 @@ class App(tk.Tk):
 
         def trabalho():
             try:
-                pasta = motor.processar(fonte, op, lambda m: self.fila.put(("log", m)), self.parar)
+                pasta = motor.processar(fonte, op, lambda m: self.fila.put(("log", m)), self.parar, modo=modo)
                 self.fila.put(("fim", pasta))
             except Exception as e:
                 self.fila.put(("log", traceback.format_exc()))

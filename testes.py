@@ -122,6 +122,41 @@ def teste_deslocar_para_o_trecho():
     assert c.inicio == 100.0 and c.palavras[0].inicio == 100.2  # o original não muda
 
 
+def teste_quantidade_exata_de_cortes():
+    # 10 min de fala, uma palavra por segundo, uma frase a cada 5 s
+    segmentos = [{"inicio": float(t), "fim": t + 5.0, "texto": "x",
+                  "palavras": [{"inicio": t + i + 0.1, "fim": t + i + 0.8, "texto": "w"} for i in range(5)]}
+                 for t in range(0, 600, 5)]
+
+    def corte(ini, fim, titulo):
+        return {"inicio": ini, "fim": fim, "pico": ini + 1, "titulo": titulo, "gancho": "", "descricao": "",
+                "nota": 8, "tags": []}
+    respostas = [
+        {"cortes": [corte(10, 35, "a"), corte(100, 104, "curto demais"), corte(20, 45, "sobrepõe o a"),
+                    corte(200, 225, "b")]},
+        {"cortes": [corte(300, 325, "c"), corte(400, 425, "d")]},
+    ]
+    pedidos = []
+
+    def ia_falsa(sistema, conteudo, *a, **k):
+        pedidos.append(conteudo)
+        return respostas[len(pedidos) - 1]
+    antiga = motor.perguntar_ia
+    motor.perguntar_ia = ia_falsa
+    try:
+        op = motor.Opcoes(qtd_cortes=3, dur_min=15, dur_max=35)
+        cortes = motor.escolher_cortes(segmentos, op, lambda m: None, exatos=True)
+        assert [c.titulo for c in cortes] == ["a", "b", "c"], [c.titulo for c in cortes]  # exatamente 3
+        assert len(pedidos) == 2 and "exatamente" in pedidos[0]
+        assert "já viraram corte" in pedidos[1] and "(a)" in pedidos[1] and "(b)" in pedidos[1]
+        # live: "até" a quantidade, numa rodada só
+        pedidos.clear()
+        cortes = motor.escolher_cortes(segmentos, op, lambda m: None, exatos=False)
+        assert [c.titulo for c in cortes] == ["a", "b"] and len(pedidos) == 1 and "até 3" in pedidos[0]
+    finally:
+        motor.perguntar_ia = antiga
+
+
 def teste_publicar_respeita_revisao():
     import publicador
     enviados = []
