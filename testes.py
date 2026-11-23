@@ -113,6 +113,15 @@ def teste_jogo_foge_da_webcam():
     assert motor._x_do_jogo(1012, 1920, (0, 0, 200, 200)) == (1920 - 1012) // 2
 
 
+def teste_deslocar_para_o_trecho():
+    P = motor.Palavra
+    c = motor.Corte(100.0, 130.0, "t", "", 8, [P(100.2, 100.6, "oi"), P(129.0, 129.5, "fim")], pico=110.0)
+    d = motor._deslocar(c, 97.0)  # trecho baixado começa 3 s antes do corte
+    assert (d.inicio, d.fim, d.pico) == (3.0, 33.0, 13.0)
+    assert [(round(w.inicio, 2), round(w.fim, 2)) for w in d.palavras] == [(3.2, 3.6), (32.0, 32.5)]
+    assert c.inicio == 100.0 and c.palavras[0].inicio == 100.2  # o original não muda
+
+
 def teste_publicar_respeita_revisao():
     import publicador
     enviados = []

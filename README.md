@@ -92,7 +92,9 @@ Os cortes saem em `cortes\<nome do vídeo>\`, junto com `legendas_dos_posts.txt`
 (título + descrição com hashtags de cada corte, pra colar no post).
 
 ## O que acontece por dentro
-1. **Download** (se for link) com yt-dlp → pasta `downloads\`
+1. **Download** (se for link) com yt-dlp → pasta `downloads\`: só o **áudio** (dezenas de MB por hora, em vez
+   de GBs do vídeo). O vídeo nunca é baixado inteiro: na edição, só o trecho de cada corte é baixado e apagado
+   logo depois. Para refazer um corte na revisão, o trecho é baixado de novo (precisa de internet).
 2. **Transcrição** com Whisper no seu PC (fica salva, então rodar de novo o mesmo vídeo é rápido)
 3. **IA (Claude)** lê a transcrição e escolhe os trechos com mais potencial, com título e descrição
 4. **Edição** com FFmpeg: recorte 9:16 centralizado no rosto, zoom lento, título no topo e

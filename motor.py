@@ -16,7 +16,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -198,6 +198,51 @@ def obter_video(fonte: str, log: Log) -> Path:
         caminho = baixados[0]["filepath"] if baixados else ydl.prepare_filename(info)
     log(f"Vídeo salvo em: {caminho}")
     return Path(caminho)
+
+
+# Link de vídeo: em vez de baixar o vídeo inteiro (GBs), baixa só o áudio (para transcrever e medir o
+# volume) e depois só o trecho de cada corte escolhido, que é apagado assim que o corte fica pronto.
+MARGEM_TRECHO = 3.0  # segundos a mais antes e depois de cada corte no trecho baixado
+
+
+def baixar_audio(fonte: str, log: Log) -> Path:
+    import yt_dlp
+
+    PASTA_DOWNLOADS.mkdir(exist_ok=True)
+    log("Baixando só o áudio do link (o vídeo não é baixado inteiro)...")
+    opcoes = {
+        "format": "ba[ext=m4a]/ba",
+        "outtmpl": str(PASTA_DOWNLOADS / "%(title).80s [%(id)s].audio.%(ext)s"),
+        "noplaylist": True,
+        "noprogress": True,
+        "quiet": True,
+        "no_warnings": True,
+        **_runtime_js(),
+    }
+    with yt_dlp.YoutubeDL(opcoes) as ydl:
+        info = ydl.extract_info(fonte.strip(), download=True)
+        baixados = info.get("requested_downloads") or []
+        caminho = Path(baixados[0]["filepath"] if baixados else ydl.prepare_filename(info))
+    log(f"Áudio salvo ({caminho.stat().st_size / 1e6:.0f} MB): {caminho.name}")
+    return caminho
+
+
+def baixar_trecho(fonte: str, ini: float, fim: float, destino: Path) -> Path:
+    """Baixa só o pedaço [ini, fim] do vídeo do link, sem reencodar. O segundo 0 do arquivo é exatamente
+    o segundo `ini` do vídeo (conferido contra o vídeo inteiro: mesmos quadros e áudio alinhado)."""
+    info = info_do_link(fonte.strip(), "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b")
+    partes = info.get("requested_formats") or [info]
+    entrada = []
+    for f in partes:
+        cab = "".join(f"{k}: {v}\r\n" for k, v in (f.get("http_headers") or {}).items())
+        entrada += (["-headers", cab] if cab else []) + ["-ss", f"{max(0.0, ini):.3f}", "-i", f["url"]]
+    mapas = ["-map", "0:v:0", "-map", "1:a:0"] if len(partes) > 1 else []
+    r = _run([achar_exe("ffmpeg"), "-v", "error", "-y", *entrada, "-t", f"{fim - ini:.3f}", *mapas,
+              "-c", "copy", str(destino)], capture_output=True, text=True)
+    if r.returncode != 0 or not destino.exists():
+        destino.unlink(missing_ok=True)
+        raise RuntimeError(f"Não consegui baixar o trecho do vídeo:\n{r.stderr[-500:]}")
+    return destino
 
 
 # ----------------------------------------------------------------------------
@@ -1017,15 +1062,18 @@ def _entrada_do_corte(trechos: list[tuple[float, float]], base: float, audio: bo
     return ";".join(partes) + f";{rotulos}concat=n={len(trechos)}:v=1:a={int(audio)}[vin]" + ("[ain]" if audio else "")
 
 
-def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -> float:
-    """Edita o corte e devolve a duração final do vídeo (já sem as pausas)."""
+def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log,
+               picos: list[dict] | None = None) -> float:
+    """Edita o corte e devolve a duração final do vídeo (já sem as pausas). `picos`: os picos de volume
+    já medidos (nos tempos deste arquivo); sem eles, mede aqui."""
     vw, vh = dimensoes_video(video)
     trechos = [(corte.inicio, corte.fim)]
     if op.cortar_pausas and len(corte.palavras) > 1:
-        try:
-            picos = picos_de_audio(video, log)
-        except Exception:  # sem os picos, corta só pelas falas
-            picos = []
+        if picos is None:
+            try:
+                picos = picos_de_audio(video, log)
+            except Exception:  # sem os picos, corta só pelas falas
+                picos = []
         trechos = trechos_sem_pausa(corte.palavras, corte.inicio, corte.fim, picos)
     dur = sum(b - a for a, b in trechos)
     if len(trechos) > 1:
@@ -1122,6 +1170,30 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
     return dur
 
 
+def _deslocar(corte: Corte, base: float) -> Corte:
+    """O mesmo corte com os tempos contados a partir de `base` (para editar a partir de um trecho baixado)."""
+    return replace(corte, inicio=corte.inicio - base, fim=corte.fim - base,
+                   palavras=[Palavra(w.inicio - base, w.fim - base, w.texto) for w in corte.palavras],
+                   pico=None if corte.pico is None else corte.pico - base)
+
+
+def renderizar_do_link(link: str, corte: Corte, destino: Path, op: Opcoes, log: Log,
+                       picos: list[dict] | None = None) -> float:
+    """Baixa só o trecho do corte (com uma folga), edita a partir dele e apaga o trecho."""
+    base = max(0.0, corte.inicio - MARGEM_TRECHO)
+    ate = corte.fim + MARGEM_TRECHO
+    PASTA_DOWNLOADS.mkdir(exist_ok=True)
+    trecho = PASTA_DOWNLOADS / f"trecho-{os.getpid()}-{int(corte.inicio * 1000)}.mp4"
+    try:
+        log(f"    baixando só este trecho ({_fmt(base)} → {_fmt(ate)})...")
+        baixar_trecho(link, base, ate, trecho)
+        picos_aqui = [{**p, "inicio": p["inicio"] - base, "fim": p["fim"] - base}
+                      for p in picos or [] if p["fim"] > base and p["inicio"] < ate]
+        return renderizar(trecho, _deslocar(corte, base), destino, op, log, picos=picos_aqui)
+    finally:
+        trecho.unlink(missing_ok=True)
+
+
 # ----------------------------------------------------------------------------
 # Tudo junto
 # ----------------------------------------------------------------------------
@@ -1174,7 +1246,14 @@ def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: 
     log(f"Refazendo '{arquivo}' ({_fmt(inicio)} → {_fmt(fim)})...")
     # renderiza num arquivo à parte: se o vídeo estiver aberto no player, o original continua inteiro
     tmp = pasta / f"refazendo-{arquivo}"
-    duracao = renderizar(video, corte, tmp, op, log)
+    if r.get("link"):  # veio de um link: no PC só tem o áudio, então baixa de novo só o trecho
+        try:
+            picos = picos_de_audio(video, log)
+        except Exception:
+            picos = []
+        duracao = renderizar_do_link(r["link"], corte, tmp, op, log, picos)
+    else:
+        duracao = renderizar(video, corte, tmp, op, log)
     try:
         os.replace(tmp, pasta / arquivo)
     except PermissionError:
@@ -1191,8 +1270,9 @@ def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: 
 
 
 def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = "", fonte: str = "",
-                 inicio_min: float = 0.0) -> list[Corte]:
-    """Transcreve, escolhe e edita os cortes de um arquivo. Retorna os cortes que saíram."""
+                 inicio_min: float = 0.0, link: str = "") -> list[Corte]:
+    """Transcreve, escolhe e edita os cortes de um arquivo. Retorna os cortes que saíram.
+    Com `link`, `video` é só o áudio: cada corte é editado a partir do trecho baixado do link."""
     segmentos = transcrever(video, op, log)
     if not segmentos:
         log("  (sem fala neste trecho, pulando)")
@@ -1207,12 +1287,17 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
     for i, c in enumerate(cortes, 1):
         nome = f"{prefixo}{i:02d} - {_nome_arquivo(c.titulo)}.mp4"
         log(f"Editando corte {i}/{len(cortes)}: {c.titulo}")
-        duracao = renderizar(video, c, pasta / nome, op, log)
+        if link:
+            duracao = renderizar_do_link(link, c, pasta / nome, op, log, picos)
+        else:
+            duracao = renderizar(video, c, pasta / nome, op, log, picos)
         r = {"arquivo": nome, "titulo": c.titulo, "descricao": c.descricao, "tags": c.tags, "fonte": fonte,
              "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(duracao, 1),
              "nota": c.nota, "origem": video.name, "video": str(video.resolve()),
              "inicio": round(c.inicio, 2), "fim": round(c.fim, 2),
              "pico": round(c.pico, 2) if c.pico is not None else None, "gancho": c.gancho}
+        if link:
+            r["link"] = link  # para refazer o corte na revisão, baixando o trecho de novo
         if op.publicar_youtube and op.revisar_antes:
             pass  # vai para a tela de revisão no final; nada sobe sem você aprovar
         elif op.publicar_youtube:
@@ -1371,9 +1456,15 @@ def processar(fonte: str, op: Opcoes, log: Log, parar: threading.Event | None = 
         info = info_do_link(fonte)
         if info.get("is_live"):
             return processar_ao_vivo(fonte, info, op, log, parar)
-    video = obter_video(fonte, log)
-    pasta = _pasta_livre(PASTA_SAIDA / _nome_arquivo(video.stem))
-    n = len(cortar_video(video, pasta, op, log, fonte=fonte.strip() if eh_link(fonte) else ""))
+    if eh_link(fonte):
+        # não baixa o vídeo inteiro: só o áudio agora e, depois, só o trecho de cada corte
+        audio = baixar_audio(fonte, log)
+        pasta = _pasta_livre(PASTA_SAIDA / _nome_arquivo(audio.name.removesuffix(audio.suffix).removesuffix(".audio")))
+        n = len(cortar_video(audio, pasta, op, log, fonte=fonte.strip(), link=fonte.strip()))
+    else:
+        video = obter_video(fonte, log)
+        pasta = _pasta_livre(PASTA_SAIDA / _nome_arquivo(video.stem))
+        n = len(cortar_video(video, pasta, op, log))
     if not n:
         raise RuntimeError("A IA não encontrou cortes bons neste vídeo.")
     log(f"Pronto! {n} cortes salvos em: {pasta}")
