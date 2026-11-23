@@ -599,6 +599,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "corte é a resposta. O gancho nunca conta o que acontece e não repete o título.\n"
         "- Um momento só por corte, com começo, clímax e fim; termine logo depois da punchline ou da reação, "
         "sem 'rabo' depois do ponto alto.\n"
+        "- Pense no loop: o Short repete sozinho, e quem assiste duas vezes faz a retenção passar de 100%. "
+        "Termine seco, num ponto que emende com o começo (a última fala puxa a primeira, ou o fim volta à "
+        "situação do início). Nunca termine com despedida, 'valeu galera', 'enfim' ou mudança de assunto.\n"
         "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
         "rendem mais que conversa morna ou leitura de chat.\n"
         "- Corte sem dó: curto e denso vence longo com partes paradas. Um corte de reação rende muito mais "
@@ -1011,7 +1014,9 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
     dur = sum(b - a for a, b in trechos)
     if len(trechos) > 1:
         log(f"    (tirei {corte.fim - corte.inicio - dur:.1f}s de pausas: {len(trechos) - 1} cortes secos)")
-    zoom = f"(1+0.10*t/{dur:.2f})"  # aproximação lenta de 10% ao longo do corte
+    # aproximação lenta de até 10% que volta ao normal no fim: o último quadro tem o mesmo enquadramento do
+    # primeiro, então quando o Short repete (loop) não há pulo de zoom
+    zoom = f"(1+0.10*sin(PI*t/{dur:.2f}))"
 
     def com_zoom(W, H):
         return [f"scale=w='2*trunc({W}*{zoom}/2)':h='2*trunc({H}*{zoom}/2)':eval=frame", f"crop={W}:{H}"]
