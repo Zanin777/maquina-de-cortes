@@ -40,14 +40,15 @@ MODELO_CLAUDE = "claude-opus-5-5"
 @dataclass
 class Opcoes:
     qtd_cortes: int = 5
-    dur_min: int = 25
-    dur_max: int = 59  # até 59 s: Short com mais de 1 min e reivindicação de direitos é bloqueado
+    dur_min: int = 15
+    dur_max: int = 35  # Short curto é visto até o fim e repetido; nunca passe de 59 s (direitos autorais)
     modelo_whisper: str = "small"
     idioma: str = "pt"
     vertical: bool = True
     legendas: bool = True
     zoom: bool = True
     titulo: bool = True
+    cortar_pausas: bool = True  # tira silêncios entre as falas (corte seco), menos onde o jogo faz barulho
     api_key: str = ""
     instrucoes_extras: str = ""
     bloco_min: int = 30  # live ao vivo: de quanto em quanto tempo sai uma leva de cortes
@@ -593,8 +594,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "sem 'rabo' depois do ponto alto.\n"
         "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
         "rendem mais que conversa morna ou leitura de chat.\n"
-        "- Prefira cortes mais curtos e densos a cortes longos com partes paradas; o ideal costuma ser "
-        "entre 25 e 45 segundos.\n"
+        "- Corte sem dó: curto e denso vence longo com partes paradas. Um corte de reação rende muito mais "
+        "com 20 a 35 segundos, porque é visto até o fim e repetido (isso pesa muito no algoritmo). Só use mais "
+        "tempo se a história realmente precisar. Tire falas que não levam à piada.\n"
         "- Título: até ~60 caracteres, curioso e fiel ao que acontece (sem mentir), em linguagem de internet; "
         "pode usar 1 emoji. Não comece com o nome do jogo.\n"
         "- 'nota' é sua aposta honesta de desempenho (1-10); reserve 9-10 para momentos realmente fortes.\n"
@@ -659,6 +661,40 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
 # 4. Edição
 # ----------------------------------------------------------------------------
 CAM_H, GAME_H = 768, 1152  # layout streamer: webcam em cima (1080x768), jogo embaixo (1080x1152)
+
+PAUSA_MAX = 0.5  # silêncio maior que isso entre duas falas vira corte seco
+FOLGA_PAUSA = 0.12  # quanto de respiro fica antes e depois de cada corte seco
+
+
+def trechos_sem_pausa(palavras: list[Palavra], ini: float, fim: float,
+                      picos: list[dict] | None = None) -> list[tuple[float, float]]:
+    """Partes do corte que ficam, tirando os silêncios entre falas. Pausa com pico de volume (explosão,
+    grito, susto no jogo) fica, porque ali está acontecendo alguma coisa."""
+    trechos: list[tuple[float, float]] = []
+    a = ini
+    for w1, w2 in zip(palavras, palavras[1:]):
+        de, ate = w1.fim + FOLGA_PAUSA, w2.inicio - FOLGA_PAUSA
+        if w2.inicio - w1.fim <= PAUSA_MAX or ate <= de:
+            continue
+        if any(p["inicio"] < w2.inicio and p["fim"] > w1.fim for p in picos or []):
+            continue
+        if de - a >= 0.2:
+            trechos.append((a, de))
+            a = ate
+    trechos.append((a, fim))
+    return trechos
+
+
+def _mapear_tempo(t: float, trechos: list[tuple[float, float]]) -> float:
+    """Segundo no vídeo original -> segundo no corte já sem as pausas (dentro de uma pausa: vai pro fim dela)."""
+    feito = 0.0
+    for a, b in trechos:
+        if t < a:
+            return feito
+        if t <= b:
+            return feito + t - a
+        feito += b - a
+    return feito
 
 
 def detectar_rosto(video: Path, ini: float, fim: float) -> tuple[float, float, float] | None:
@@ -806,8 +842,14 @@ def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float) -> list[str]
 
 
 def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: int | None = None,
-              titulo_vermelho: bool = False, margem_leg: int | None = None) -> str:
-    dur = corte.fim - corte.inicio
+              titulo_vermelho: bool = False, margem_leg: int | None = None,
+              trechos: list[tuple[float, float]] | None = None) -> str:
+    # tempos do vídeo original -> tempos no corte (sem as pausas, se elas foram tiradas)
+    trechos = trechos or [(corte.inicio, corte.fim)]
+    dur = sum(b - a for a, b in trechos)
+
+    def tempo(t: float) -> float:
+        return _mapear_tempo(t, trechos)
     tam_leg = int(altura * 0.045) if altura > largura else int(altura * 0.07)
     tam_tit = int(altura * 0.032) if altura > largura else int(altura * 0.055)
     if margem_leg is None:
@@ -850,13 +892,13 @@ def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: i
         grupos: list[list[Palavra]] = []
         for w in corte.palavras:
             if (not grupos or len(grupos[-1]) >= 3
-                    or w.inicio - grupos[-1][-1].fim > 0.6):
+                    or tempo(w.inicio) - tempo(grupos[-1][-1].fim) > 0.6):
                 grupos.append([])
             grupos[-1].append(w)
         for g in grupos:
             for i, w in enumerate(g):
-                ini = w.inicio - corte.inicio
-                fim = (g[i + 1].inicio if i + 1 < len(g) else w.fim) - corte.inicio
+                ini = tempo(w.inicio)
+                fim = tempo(g[i + 1].inicio if i + 1 < len(g) else w.fim)
                 partes = []
                 for j, x in enumerate(g):
                     palavra = _ass_esc(x.texto.upper())
@@ -913,9 +955,38 @@ def _x_do_jogo(gw: int, vw: int, faixa_cam: tuple[float, float]) -> int:
     return min(candidatos, key=lambda x: (round(sobra(x)), candidatos.index(x)))
 
 
+def _tem_audio(video: Path) -> bool:
+    r = _run([achar_exe("ffprobe"), "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+              "-of", "csv=p=0", str(video)], capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
+def _entrada_do_corte(trechos: list[tuple[float, float]], base: float, audio: bool) -> str:
+    """Filtro que recorta cada trecho no quadro exato e junta todos (corte seco) em [vin] e [ain]."""
+    partes, rotulos = [], ""
+    for i, (a, b) in enumerate(trechos):
+        partes.append(f"[0:v]trim=start={a - base:.3f}:end={b - base:.3f},setpts=PTS-STARTPTS[v{i}]")
+        rotulos += f"[v{i}]"
+        if audio:
+            partes.append(f"[0:a]atrim=start={a - base:.3f}:end={b - base:.3f},asetpts=PTS-STARTPTS[a{i}]")
+            rotulos += f"[a{i}]"
+    if len(trechos) == 1:
+        return ";".join(partes).replace("[v0]", "[vin]").replace("[a0]", "[ain]")
+    return ";".join(partes) + f";{rotulos}concat=n={len(trechos)}:v=1:a={int(audio)}[vin]" + ("[ain]" if audio else "")
+
+
 def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -> None:
     vw, vh = dimensoes_video(video)
-    dur = corte.fim - corte.inicio
+    trechos = [(corte.inicio, corte.fim)]
+    if op.cortar_pausas and len(corte.palavras) > 1:
+        try:
+            picos = picos_de_audio(video, log)
+        except Exception:  # sem os picos, corta só pelas falas
+            picos = []
+        trechos = trechos_sem_pausa(corte.palavras, corte.inicio, corte.fim, picos)
+    dur = sum(b - a for a, b in trechos)
+    if len(trechos) > 1:
+        log(f"    (tirei {corte.fim - corte.inicio - dur:.1f}s de pausas: {len(trechos) - 1} cortes secos)")
     zoom = f"(1+0.10*t/{dur:.2f})"  # aproximação lenta de 10% ao longo do corte
 
     def com_zoom(W, H):
@@ -924,9 +995,9 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
     # Busca em 2 etapas: o -ss antes do -i pula rápido para alguns segundos antes do corte e o
     # trim no filtro corta no quadro exato. Só com o -ss antes do -i, em arquivos .ts de live o
     # vídeo começava no próximo quadro-chave (até 2 s depois) e o início ficava congelado.
-    pre = min(corte.inicio, 3.0)
-    corte_fino = f"trim=start={pre:.3f}:duration={dur:.3f},setpts=PTS-STARTPTS,"
-    audio_fino = f"atrim=start={pre:.3f}:duration={dur:.3f},asetpts=PTS-STARTPTS"
+    base = corte.inicio - min(corte.inicio, 3.0)
+    audio = _tem_audio(video)
+    entrada = _entrada_do_corte(trechos, base, audio)
     margem_tit = None
     margem_leg = None
     grafo = None
@@ -943,7 +1014,7 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
             faixa_h = _altura_faixa(corte.titulo) if op.titulo and corte.titulo else 0
             gy = faixa_h if faixa_h else (GAME_H - jogo_h) // 2
             cam_zoom = ",".join(com_zoom(1080, CAM_H)) + "," if op.zoom else ""
-            grafo = (f"[0:v]{corte_fino}split=3[a][b][c];"
+            grafo = (f"[vin]split=3[a][b][c];"
                      f"[a]crop={cw}:{ch}:{cx}:{cy},scale=1080:{CAM_H},{cam_zoom}setsar=1[cam];"
                      f"[b]scale=1080:{GAME_H}:force_original_aspect_ratio=increase,crop=1080:{GAME_H},"
                      f"boxblur=25:2,eq=brightness=-0.12,setsar=1[fundo];"
@@ -954,7 +1025,6 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
             margem_leg = int(H * ALTURA_LEGENDA)  # legenda por cima do jogo, um pouco abaixo do meio
 
     if grafo is None:
-        filtros.append(corte_fino.rstrip(","))
         if op.vertical:
             W, H = 1080, 1920
             if vw / vh > 9 / 16:  # vídeo mais largo que 9:16 -> recorta nas laterais
@@ -978,19 +1048,19 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
 
     with tempfile.TemporaryDirectory() as tmp:
         if op.legendas or op.titulo:
-            ass = gerar_ass(corte, W, H, op, margem_tit, titulo_vermelho=grafo is not None, margem_leg=margem_leg)
+            ass = gerar_ass(corte, W, H, op, margem_tit, titulo_vermelho=grafo is not None, margem_leg=margem_leg,
+                            trechos=trechos)
             Path(tmp, "leg.ass").write_text(ass, encoding="utf-8")
             filtros.append("subtitles=leg.ass")
         filtros.append("setsar=1")
 
-        if grafo:
-            video_args = ["-filter_complex", f"{grafo}[st];[st]{','.join(filtros)}[v]",
-                          "-map", "[v]", "-map", "0:a?", "-af", audio_fino]
-        else:
-            video_args = ["-vf", ",".join(filtros), "-af", audio_fino]
+        meio = f"{grafo}[st];[st]" if grafo else "[vin]"
+        video_args = ["-filter_complex", f"{entrada};{meio}{','.join(filtros)}[v]", "-map", "[v]"]
+        if audio:
+            video_args += ["-map", "[ain]"]
         cmd = [
             achar_exe("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{corte.inicio - pre:.3f}", "-i", str(video.resolve()),
+            "-ss", f"{base:.3f}", "-i", str(video.resolve()),
             *video_args, "-t", f"{dur:.3f}",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
             "-r", "30", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",

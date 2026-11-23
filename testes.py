@@ -59,6 +59,22 @@ def teste_comecar_perto_do_pico():
     assert motor._comecar_perto_do_pico(palavras, frases + [36], 38.0) == palavras
 
 
+def teste_tirar_pausas():
+    P = motor.Palavra
+    # fala, 3 s de silêncio, fala, 2 s de silêncio com explosão no jogo, fala
+    palavras = [P(10.0, 10.5, "a"), P(10.6, 11.0, "b"), P(14.0, 14.5, "c"), P(16.5, 17.0, "d")]
+    picos = [{"inicio": 15.0, "fim": 16.0, "db": 20}]
+    trechos = motor.trechos_sem_pausa(palavras, 9.85, 17.35, picos)
+    assert trechos == [(9.85, 11.12), (13.88, 17.35)], trechos  # só o silêncio sem nada some
+    assert motor.trechos_sem_pausa(palavras, 9.85, 17.35) == [(9.85, 11.12), (13.88, 14.62),
+                                                             (16.38, 17.35)]
+    # tempos do original no corte já sem pausas
+    assert motor._mapear_tempo(10.0, trechos) == 10.0 - 9.85
+    assert abs(motor._mapear_tempo(14.0, trechos) - (11.12 - 9.85 + 0.12)) < 1e-9
+    assert motor._mapear_tempo(12.0, trechos) == motor._mapear_tempo(13.88, trechos)  # dentro da pausa
+    assert abs(motor._mapear_tempo(99, trechos) - sum(b - a for a, b in trechos)) < 1e-9
+
+
 def teste_publicar_respeita_revisao():
     import publicador
     enviados = []

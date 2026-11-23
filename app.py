@@ -57,8 +57,10 @@ class App(tk.Tk):
         nums = ttk.Frame(frm)
         nums.grid(row=3, column=0, columnspan=3, sticky="w", **pad)
         self.qtd = tk.IntVar(value=cfg.get("qtd_cortes", 5))
-        self.dmin = tk.IntVar(value=cfg.get("dur_min", 25))
-        self.dmax = tk.IntVar(value=cfg.get("dur_max", 59))
+        # 25-59 s era o padrão antigo: vira o novo (cortes curtos retêm mais); valores escolhidos à mão ficam
+        padrao_antigo = cfg.get("dur_min") == 25 and cfg.get("dur_max") == 59
+        self.dmin = tk.IntVar(value=15 if padrao_antigo else cfg.get("dur_min", 15))
+        self.dmax = tk.IntVar(value=35 if padrao_antigo else cfg.get("dur_max", 35))
         self.whisper = tk.StringVar(value=cfg.get("modelo_whisper", "small"))
         ttk.Label(nums, text="Cortes:").pack(side="left")
         ttk.Spinbox(nums, from_=1, to=30, width=4, textvariable=self.qtd).pack(side="left", padx=(4, 14))
@@ -81,8 +83,9 @@ class App(tk.Tk):
         self.legendas = tk.BooleanVar(value=cfg.get("legendas", True))
         self.zoom = tk.BooleanVar(value=cfg.get("zoom", True))
         self.titulo = tk.BooleanVar(value=cfg.get("titulo", True))
+        self.cortar_pausas = tk.BooleanVar(value=cfg.get("cortar_pausas", True))
         for txt, var in [("Vertical 9:16", self.vertical), ("Legendas automáticas", self.legendas),
-                         ("Zoom lento", self.zoom), ("Título", self.titulo)]:
+                         ("Zoom lento", self.zoom), ("Título", self.titulo), ("Cortar pausas", self.cortar_pausas)]:
             ttk.Checkbutton(ed, text=txt, variable=var).pack(side="left", padx=8)
 
         lay = ttk.Frame(frm)
@@ -204,7 +207,7 @@ class App(tk.Tk):
             qtd_cortes=self.qtd.get(), dur_min=self.dmin.get(), dur_max=self.dmax.get(),
             modelo_whisper=self.whisper.get(), vertical=self.vertical.get(),
             legendas=self.legendas.get(), zoom=self.zoom.get(), titulo=self.titulo.get(),
-            api_key=self.chave.get(), instrucoes_extras=self.extras.get(), bloco_min=self.bloco.get(),
+            cortar_pausas=self.cortar_pausas.get(), api_key=self.chave.get(), instrucoes_extras=self.extras.get(), bloco_min=self.bloco.get(),
             layout=self.layouts.get(self.layout.get(), "streamer"), cam_regiao=self.cam_regiao,
             publicar_youtube=self.publicar.get(), yt_modo=self.modos_yt.get(self.modo_yt.get(), "publico"),
             yt_intervalo_min=self.intervalo_yt.get(), yt_nota_min=self.nota_yt.get(),
