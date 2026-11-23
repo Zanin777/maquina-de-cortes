@@ -57,6 +57,9 @@ def teste_comecar_perto_do_pico():
     assert motor._comecar_perto_do_pico(palavras, frases, None) == palavras
     # sobraria menos de 6 s depois do pico: não mexe (o corte ficaria curto demais)
     assert motor._comecar_perto_do_pico(palavras, frases + [36], 38.0) == palavras
+    # com mínimo de 10,5 s (70% de 15 s): pico aos 33 s deixaria só ~9 s, então não mexe
+    assert motor._comecar_perto_do_pico(palavras, frases, 33.0)[0].inicio == 30
+    assert motor._comecar_perto_do_pico(palavras, frases, 33.0, minimo=10.5) == palavras
 
 
 def teste_tirar_pausas():

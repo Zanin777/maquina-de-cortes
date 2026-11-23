@@ -651,7 +651,8 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
             continue
         pico = float(c["pico"]) if c.get("pico") is not None else None
         antes = dentro[0].inicio
-        dentro = _comecar_perto_do_pico(dentro, inicios_frase, pico)
+        # tirar a preparação não pode deixar o corte bem abaixo da duração mínima pedida
+        dentro = _comecar_perto_do_pico(dentro, inicios_frase, pico, minimo=max(6.0, op.dur_min * 0.7))
         if dentro[0].inicio - antes > 1:
             log(f"  (corte '{c['titulo'][:40]}': tirei {dentro[0].inicio - antes:.0f}s de preparação antes do pico)")
         dentro, onde = _caber_na_duracao(dentro, inicios_frase, op.dur_max)
