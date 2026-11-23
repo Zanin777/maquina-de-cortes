@@ -78,6 +78,7 @@ class Corte:
     palavras: list[Palavra] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     pico: float | None = None  # segundo (no vídeo original) do ponto alto: reação, grito, punchline
+    gancho: str = ""  # pergunta/promessa que aparece nos primeiros segundos e só se resolve no fim
 
 
 # ----------------------------------------------------------------------------
@@ -402,13 +403,16 @@ SCHEMA_CORTES = {
                     "pico": {"type": "number", "description": "segundo do ponto alto do corte: a reação (grito, "
                              "risada, 'QUÊ?!'), a punchline ou a cena chocante"},
                     "titulo": {"type": "string", "description": "título curto e chamativo, até 8 palavras"},
+                    "gancho": {"type": "string", "description": "texto da tela nos 2 primeiros segundos, até 40 "
+                               "caracteres: uma pergunta ou promessa que só se resolve no fim do corte, sem "
+                               "entregar o final (ex.: 'espera o que acontece com o tubarão 🦈')"},
                     "descricao": {"type": "string", "description": "legenda do post: 1-2 frases que dão vontade "
                                   "de assistir + 3 a 5 hashtags (jogo, streamer, tema), sem #shorts"},
                     "tags": {"type": "array", "items": {"type": "string"},
                              "description": "5 a 10 termos de busca do YouTube (sem #)"},
                     "nota": {"type": "integer", "description": "potencial de viralizar de 1 a 10"},
                 },
-                "required": ["inicio", "fim", "pico", "titulo", "descricao", "nota", "tags"],
+                "required": ["inicio", "fim", "pico", "titulo", "gancho", "descricao", "nota", "tags"],
                 "additionalProperties": False,
             },
         }
@@ -424,7 +428,7 @@ def _fmt(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:04.1f}" if h else f"{m:02d}:{s:04.1f}"
 
 
-FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 40.1, "pico": 14.0, "titulo": "...", '
+FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 40.1, "pico": 14.0, "titulo": "...", "gancho": "...", '
                   '"descricao": "... #hashtag #hashtag #hashtag", "nota": 8, "tags": ["termo", "termo"]}]}')
 
 
@@ -590,6 +594,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "Comece NO pico ou no máximo 2-3 s antes dele: a reação (grito, risada, 'QUÊ?!'), a cena chocante ou a "
         "frase mais forte. Corte toda a preparação: menu, pausa, carregamento, 'deixa eu ver aqui', 'então', "
         "'bom', explicação. Informe em 'pico' o segundo desse ponto alto.\n"
+        "- Abra uma pergunta e só responda no fim: o 'gancho' aparece na tela nos 2 primeiros segundos e "
+        "cria a dúvida ('espera o que acontece com o tubarão 🦈', 'ele não esperava ESSA resposta'); o fim do "
+        "corte é a resposta. O gancho nunca conta o que acontece e não repete o título.\n"
         "- Um momento só por corte, com começo, clímax e fim; termine logo depois da punchline ou da reação, "
         "sem 'rabo' depois do ponto alto.\n"
         "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
@@ -650,7 +657,8 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         if any(ini < o.fim and fim > o.inicio for o in cortes):
             continue
         cortes.append(Corte(ini, fim, c["titulo"].strip(), c["descricao"].strip(),
-                            int(c["nota"]), dentro, tags=list(c.get("tags") or [])[:15], pico=pico))
+                            int(c["nota"]), dentro, tags=list(c.get("tags") or [])[:15], pico=pico,
+                            gancho=str(c.get("gancho") or "").strip()))
     log(f"A IA escolheu {len(cortes)} cortes.")
     for i, c in enumerate(cortes, 1):
         log(f"  {i}. [{_fmt(c.inicio)} → {_fmt(c.fim)}] nota {c.nota} — {c.titulo}")
@@ -799,14 +807,19 @@ def _altura_faixa(titulo: str) -> int:
     return len(_quebrar(titulo.upper())) * int(TAM_FAIXA * 1.18) + 2 * 24 + 10
 
 
-def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float) -> list[str]:
-    """Faixa vermelha na largura toda, com detalhe amarelo em cima, sombra vinho embaixo e texto branco."""
+DUR_GANCHO = 2.5  # segundos em que o gancho (pergunta do começo) fica na tela
+
+
+def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float, de: float = 0.0) -> list[str]:
+    """Faixa vermelha na largura toda, com detalhe amarelo em cima, sombra vinho embaixo e texto branco.
+    Aparece de `de` até `dur` (segundos do corte)."""
     linhas_tit = _quebrar(titulo.upper())
     alt = _altura_faixa(titulo) - 10
     fim = _ass_tempo(dur)
+    ini = _ass_tempo(de)
 
     def ret(y, h, cor_bgr, camada, extra=""):
-        return (f"Dialogue: {camada},{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        return (f"Dialogue: {camada},{ini},{fim},Desenho,,0,0,0,,"
                 f"{{\\an7\\pos(0,{y})\\1c&H{cor_bgr}&\\fad(150,0){extra}\\p1}}"
                 f"m 0 0 l {largura} 0 l {largura} {h} l 0 {h}{{\\p0}}")
 
@@ -823,19 +836,19 @@ def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float) -> list[str]
         ret(y0 + alt, 10, "00006E", 2),            # sombra vinho embaixo
         ret(y0, alt, "1C1CD9", 3),                 # faixa vermelha
         ret(y0 + alt // 2, alt - alt // 2, "1212B4", 3, "\\1a&H70&"),  # metade de baixo mais escura (degradê)
-        f"Dialogue: 3,{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        f"Dialogue: 3,{ini},{fim},Desenho,,0,0,0,,"
         f"{{\\an7\\pos(0,{y0})\\1c&H0E0EA0&\\1a&HB4&\\fad(150,0){clip}\\p1}}{listras}{{\\p0}}",
         ret(y0, 8, "00D2FF", 4),                   # detalhe amarelo em cima
         ret(y0 + 8, 3, "FFFFFF", 4, "\\1a&H60&"),  # filete branco embaixo do amarelo
         ret(y0 + alt - 4, 4, "0E0E9A", 4),         # filete escuro na base
-        f"Dialogue: 4,{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        f"Dialogue: 4,{ini},{fim},Desenho,,0,0,0,,"
         f"{{\\an7\\pos(0,{y0 + alt - canto})\\1c&H00D2FF&\\fad(150,0)\\p1}}m 0 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
-        f"Dialogue: 4,{_ass_tempo(0)},{fim},Desenho,,0,0,0,,"
+        f"Dialogue: 4,{ini},{fim},Desenho,,0,0,0,,"
         f"{{\\an7\\pos({largura - canto},{y0 + alt - canto})\\1c&H00D2FF&\\fad(150,0)\\p1}}"
         f"m {canto} 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
-        f"Dialogue: 4,{_ass_tempo(0)},{_ass_tempo(min(dur, 1.2))},Desenho,,0,0,0,,"
+        f"Dialogue: 4,{ini},{_ass_tempo(min(dur, de + 1.2))},Desenho,,0,0,0,,"
         f"{{\\an7\\move({-120},{y0},{largura + alt},{y0},250,900)\\1c&HFFFFFF&\\1a&H90&{clip}\\p1}}{brilho}{{\\p0}}",
-        f"Dialogue: 5,{_ass_tempo(0)},{fim},TitV,,0,0,0,,"
+        f"Dialogue: 5,{ini},{fim},TitV,,0,0,0,,"
         f"{{\\an5\\pos({largura // 2},{y0 + alt // 2 + 3})\\fad(150,0)\\3c&H00006E&\\4c&H00005A&\\shad5"
         f"\\fscx80\\fscy80\\t(0,220,\\fscx100\\fscy100)}}{texto}",
     ]
@@ -881,11 +894,20 @@ def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: i
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-    if op.titulo and corte.titulo and titulo_vermelho:
-        linhas += _faixa_vermelha(corte.titulo, largura, margem_tit, dur)
-    elif op.titulo and corte.titulo:
-        linhas.append(f"Dialogue: 1,{_ass_tempo(0)},{_ass_tempo(dur)},Tit,,0,0,0,,"
-                      f"{{\\fad(250,0)}}{_ass_esc(corte.titulo.upper())}")
+    # o que vai no topo: o gancho nos primeiros segundos, depois o título
+    topo: list[tuple[str, float, float]] = []
+    if op.titulo:
+        troca = min(DUR_GANCHO, dur) if corte.gancho else 0.0
+        if corte.gancho:
+            topo.append((corte.gancho, 0.0, troca))
+        if corte.titulo and dur - troca > 0.3:
+            topo.append((corte.titulo, troca, dur))
+    for texto, de, ate in topo:
+        if titulo_vermelho:
+            linhas += _faixa_vermelha(texto, largura, margem_tit, ate, de)
+        else:
+            linhas.append(f"Dialogue: 1,{_ass_tempo(de)},{_ass_tempo(ate)},Tit,,0,0,0,,"
+                          f"{{\\fad(250,0)}}{_ass_esc(texto.upper())}")
 
     if op.legendas:
         # agrupa as palavras em blocos de até 3 (quebra em pausas)
@@ -1011,7 +1033,8 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
             # jogo inteiro (16:9, sem cortar nada), centralizado logo abaixo da faixa do título,
             # em cima de um fundo desfocado do próprio jogo
             jogo_h = _par(1080 * vh / vw)
-            faixa_h = _altura_faixa(corte.titulo) if op.titulo and corte.titulo else 0
+            textos = [t for t in (corte.gancho, corte.titulo) if t] if op.titulo else []
+            faixa_h = max((_altura_faixa(t) for t in textos), default=0)
             gy = faixa_h if faixa_h else (GAME_H - jogo_h) // 2
             cam_zoom = ",".join(com_zoom(1080, CAM_H)) + "," if op.zoom else ""
             grafo = (f"[vin]split=3[a][b][c];"
@@ -1118,7 +1141,8 @@ def refazer_corte(pasta: Path, arquivo: str, inicio: float, fim: float, titulo: 
     segmentos = transcrever(video, op, log)
     palavras = [Palavra(w["inicio"], w["fim"], w["texto"]) for s in segmentos for w in s["palavras"]
                 if w["inicio"] >= inicio - 0.05 and w["fim"] <= fim + 0.05]
-    corte = Corte(inicio, fim, titulo.strip() or r["titulo"], r.get("descricao", ""), r.get("nota", 0), palavras)
+    corte = Corte(inicio, fim, titulo.strip() or r["titulo"], r.get("descricao", ""), r.get("nota", 0), palavras,
+                  pico=r.get("pico"), gancho=r.get("gancho") or "")
     log(f"Refazendo '{arquivo}' ({_fmt(inicio)} → {_fmt(fim)})...")
     # renderiza num arquivo à parte: se o vídeo estiver aberto no player, o original continua inteiro
     tmp = pasta / f"refazendo-{arquivo}"
@@ -1160,7 +1184,7 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
              "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(c.fim - c.inicio, 1),
              "nota": c.nota, "origem": video.name, "video": str(video.resolve()),
              "inicio": round(c.inicio, 2), "fim": round(c.fim, 2),
-             "pico": round(c.pico, 2) if c.pico is not None else None}
+             "pico": round(c.pico, 2) if c.pico is not None else None, "gancho": c.gancho}
         if op.publicar_youtube and op.revisar_antes:
             pass  # vai para a tela de revisão no final; nada sobe sem você aprovar
         elif op.publicar_youtube:

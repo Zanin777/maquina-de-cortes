@@ -75,6 +75,21 @@ def teste_tirar_pausas():
     assert abs(motor._mapear_tempo(99, trechos) - sum(b - a for a, b in trechos)) < 1e-9
 
 
+def teste_gancho_no_comeco():
+    c = motor.Corte(100, 120, "Título do corte", "", 8, [motor.Palavra(100.2, 100.6, "oi")],
+                    gancho="espera o que acontece")
+    linhas = motor.gerar_ass(c, 1080, 1920, motor.Opcoes(), 768, titulo_vermelho=True).splitlines()
+    gancho = [l for l in linhas if "ESPERA O QUE ACONTECE" in l]
+    titulo = [l for l in linhas if "TÍTULO DO CORTE" in l]
+    assert len(gancho) == 1 and gancho[0].split(",")[1:3] == ["0:00:00.00", "0:00:02.50"], gancho
+    assert len(titulo) == 1 and titulo[0].split(",")[1:3] == ["0:00:02.50", "0:00:20.00"], titulo
+    # sem gancho: o título fica o corte inteiro, como antes
+    c.gancho = ""
+    linhas = motor.gerar_ass(c, 1080, 1920, motor.Opcoes(), 768, titulo_vermelho=True).splitlines()
+    titulo = [l for l in linhas if "TÍTULO DO CORTE" in l]
+    assert titulo[0].split(",")[1:3] == ["0:00:00.00", "0:00:20.00"], titulo
+
+
 def teste_publicar_respeita_revisao():
     import publicador
     enviados = []
