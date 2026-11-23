@@ -147,7 +147,7 @@ def teste_quantidade_exata_de_cortes():
         op = motor.Opcoes(qtd_cortes=3, dur_min=15, dur_max=35)
         cortes = motor.escolher_cortes(segmentos, op, lambda m: None, exatos=True)
         assert [c.titulo for c in cortes] == ["a", "b", "c"], [c.titulo for c in cortes]  # exatamente 3
-        assert len(pedidos) == 2 and "exatamente" in pedidos[0]
+        assert len(pedidos) == 2 and "os 5 melhores cortes" in pedidos[0]
         assert "já viraram corte" in pedidos[1] and "(a)" in pedidos[1] and "(b)" in pedidos[1]
         # live: "até" a quantidade, numa rodada só
         pedidos.clear()
@@ -155,6 +155,36 @@ def teste_quantidade_exata_de_cortes():
         assert [c.titulo for c in cortes] == ["a", "b"] and len(pedidos) == 1 and "até 3" in pedidos[0]
     finally:
         motor.perguntar_ia = antiga
+
+
+def teste_corte_sem_acao_nao_sai():
+    segmentos = [{"inicio": float(t), "fim": t + 5.0, "texto": "x",
+                  "palavras": [{"inicio": t + i + 0.1, "fim": t + i + 0.8, "texto": "w"} for i in range(5)]}
+                 for t in range(0, 600, 5)]
+
+    def corte(ini, titulo, tem_acao=True, nota=8):
+        return {"inicio": ini, "fim": ini + 25, "pico": ini + 1, "titulo": titulo, "gancho": "", "descricao": "",
+                "nota": nota, "tags": [], "acontece": "algo", "tem_acao": tem_acao}
+    respostas = [{"cortes": [corte(10, "fuga", True), corte(100, "opinião sobre o carro", False),
+                             corte(200, "nota baixa", True, nota=3), corte(300, "tiroteio", True)]},
+                 {"cortes": []}]  # 2ª rodada: a IA não acha mais nada bom
+    pedidos = []
+
+    def ia_falsa(sistema, conteudo, *a, **k):
+        pedidos.append(conteudo)
+        return respostas[len(pedidos) - 1]
+    antiga = motor.perguntar_ia
+    motor.perguntar_ia = ia_falsa
+    avisos = []
+    try:
+        op = motor.Opcoes(qtd_cortes=4, dur_min=15, dur_max=35)
+        cortes = motor.escolher_cortes(segmentos, op, avisos.append, exatos=True)
+    finally:
+        motor.perguntar_ia = antiga
+    # só os 2 com ação e nota boa saem; não enche com o resto e para de pedir quando a IA não acha mais
+    assert [c.titulo for c in cortes] == ["fuga", "tiroteio"], [c.titulo for c in cortes]
+    assert len(pedidos) == 2 and cortes[0].acontece == "algo"
+    assert any("nada acontecendo" in a for a in avisos) and any("só tem 2 momentos" in a for a in avisos)
 
 
 def teste_publicar_respeita_revisao():

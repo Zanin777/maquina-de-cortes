@@ -80,6 +80,7 @@ class Corte:
     tags: list[str] = field(default_factory=list)
     pico: float | None = None  # segundo (no vídeo original) do ponto alto: reação, grito, punchline
     gancho: str = ""  # pergunta/promessa que aparece nos primeiros segundos e só se resolve no fim
+    acontece: str = ""  # o que acontece na tela nesse momento, segundo a IA
 
 
 # ----------------------------------------------------------------------------
@@ -446,6 +447,11 @@ SCHEMA_CORTES = {
                 "properties": {
                     "inicio": {"type": "number", "description": "segundo de início"},
                     "fim": {"type": "number", "description": "segundo de fim"},
+                    "acontece": {"type": "string", "description": "em 1 frase, o que ACONTECE na tela/no jogo "
+                                 "nesse momento (ex.: 'a polícia cerca o carro e ele foge pulando na água')"},
+                    "tem_acao": {"type": "boolean", "description": "true só se acontece algo concreto no jogo "
+                                 "(perseguição, morte, batida, tiroteio, susto, cena chocante) ou há uma reação "
+                                 "forte a algo; false se é só o streamer conversando, opinando ou explicando"},
                     "pico": {"type": "number", "description": "segundo do ponto alto do corte: a reação (grito, "
                              "risada, 'QUÊ?!'), a punchline ou a cena chocante"},
                     "titulo": {"type": "string", "description": "título curto que cria curiosidade sem contar o "
@@ -459,7 +465,8 @@ SCHEMA_CORTES = {
                              "description": "5 a 10 termos de busca do YouTube (sem #)"},
                     "nota": {"type": "integer", "description": "potencial de viralizar de 1 a 10"},
                 },
-                "required": ["inicio", "fim", "pico", "titulo", "gancho", "descricao", "nota", "tags"],
+                "required": ["inicio", "fim", "acontece", "tem_acao", "pico", "titulo", "gancho", "descricao",
+                             "nota", "tags"],
                 "additionalProperties": False,
             },
         }
@@ -475,7 +482,8 @@ def _fmt(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:04.1f}" if h else f"{m:02d}:{s:04.1f}"
 
 
-FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 40.1, "pico": 14.0, "titulo": "...", "gancho": "...", '
+FORMATO_CORTES = ('{"cortes": [{"inicio": 12.3, "fim": 40.1, "acontece": "...", "tem_acao": true, "pico": 14.0, '
+                  '"titulo": "...", "gancho": "...", '
                   '"descricao": "... #hashtag #hashtag #hashtag", "nota": 8, "tags": ["termo", "termo"]}]}')
 
 
@@ -600,6 +608,7 @@ def _caber_na_duracao(dentro: list[Palavra], inicios_frase: list[float], dur_max
 
 
 MAX_ANTES_DO_PICO = 4.0  # o corte começa no máximo isso antes do ponto alto (o resto é preparação)
+NOTA_MIN_CORTE = 5  # corte com nota menor que isso (aposta da própria IA) é fraco demais e não sai
 
 
 def _comecar_perto_do_pico(dentro: list[Palavra], inicios_frase: list[float], pico: float | None,
@@ -650,8 +659,15 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         "- Pense no loop: o Short repete sozinho, e quem assiste duas vezes faz a retenção passar de 100%. "
         "Termine seco, num ponto que emende com o começo (a última fala puxa a primeira, ou o fim volta à "
         "situação do início). Nunca termine com despedida, 'valeu galera', 'enfim' ou mudança de assunto.\n"
-        "- Reações fortes (riso, raiva, susto, indignação), frases citáveis e situações absurdas do jogo "
-        "rendem mais que conversa morna ou leitura de chat.\n"
+        "- Tem que ACONTECER alguma coisa. Um corte é um acontecimento no jogo (perseguição, morte, batida, "
+        "tiroteio, susto, cena chocante, algo absurdo) e/ou uma reação forte a ele (riso, raiva, susto, "
+        "indignação). O streamer só falando, opinando, explicando mecânica, contando história do jogo ou lendo "
+        "chat, sem nada acontecendo, NÃO é corte, por mais que a frase pareça interessante. Descreva em "
+        "'acontece' o que se vê na tela e marque 'tem_acao' com honestidade. A transcrição traz as falas do "
+        "streamer e do jogo (NPCs, cutscenes) e as marcas de volume ajudam a perceber a ação.\n"
+        "- Cada corte é um acontecimento diferente: nunca faça dois cortes do mesmo momento ou da mesma "
+        "perseguição/briga, mesmo em trechos de tempo diferentes.\n"
+        "- Qualidade antes de quantidade: se o vídeo não tem momentos fortes suficientes, escolha menos.\n"
         "- Corte sem dó: curto e denso vence longo com partes paradas. Um corte de reação rende muito mais "
         "com 20 a 35 segundos, porque é visto até o fim e repetido (isso pesa muito no algoritmo). Só use mais "
         "tempo se a história realmente precisar. Tire falas que não levam à piada.\n"
@@ -679,6 +695,12 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         ini, fim = float(c["inicio"]), float(c["fim"])
         if fim <= ini:
             return None
+        if c.get("tem_acao") is False:  # só conversa: o streamer falando sem nada acontecendo
+            log(f"  (descartado, nada acontecendo: '{c['titulo'][:40]}' — {str(c.get('acontece', ''))[:70]})")
+            return None
+        if int(c.get("nota", 0)) < NOTA_MIN_CORTE:
+            log(f"  (descartado, nota {c.get('nota')} baixa demais: '{c['titulo'][:40]}')")
+            return None
         dentro = [w for w in palavras if w.inicio >= ini - 0.5 and w.fim <= fim + 1.5]
         if not dentro:
             return None
@@ -701,10 +723,12 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         if any(ini < o.fim and fim > o.inicio for o in cortes):  # sobrepõe um corte já aceito
             return None
         return Corte(ini, fim, c["titulo"].strip(), c["descricao"].strip(), int(c["nota"]), dentro,
-                     tags=list(c.get("tags") or [])[:15], pico=pico, gancho=str(c.get("gancho") or "").strip())
+                     tags=list(c.get("tags") or [])[:15], pico=pico, gancho=str(c.get("gancho") or "").strip(),
+                     acontece=str(c.get("acontece") or "").strip())
 
-    # vídeo: a quantidade pedida exata. A IA escolhe alguns a mais de reserva (alguns caem nas regras acima)
-    # e, se ainda faltar, é chamada de novo só para os que faltam. Live: até a quantidade, por bloco.
+    # vídeo: busca a quantidade pedida. A IA escolhe alguns a mais de reserva (alguns caem nas regras acima)
+    # e, se ainda faltar, é chamada de novo só para os que faltam. Mas qualidade vem antes: se o vídeo não
+    # tem tantos momentos com ação, saem menos (e o registro avisa). Live: até a quantidade, por bloco.
     alvo = op.qtd_cortes
     for rodada in range(3 if exatos else 1):
         falta = alvo - len(cortes)
@@ -712,8 +736,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
             break
         pedir = falta + (max(2, (falta + 1) // 2) if exatos else 0)
         pedido = (
-            f"Escolha {'exatamente' if exatos else 'até'} {pedir} cortes, cada um entre {op.dur_min} e "
-            f"{op.dur_max} segundos. "
+            f"Escolha {'os' if exatos else 'até'} {pedir} {'melhores ' if exatos else ''}cortes"
+            f"{' (se o vídeo não tiver tantos momentos com ação de verdade, escolha menos)' if exatos else ''}, "
+            f"cada um entre {op.dur_min} e {op.dur_max} segundos. "
             "Use os segundos dos colchetes para 'inicio' e 'fim'. Escreva título e descrição em português do Brasil. "
             "Na descrição: 1 ou 2 frases que deem vontade de assistir (sem contar o final), seguidas de 3 a 5 hashtags relevantes "
             "(o jogo, o nome do streamer se aparecer na fala ou no contexto, o tema do momento); não use #shorts. "
@@ -735,6 +760,8 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
         conteudo = f"<transcricao>\n{transcricao}\n</transcricao>\n\n{pedido}"
         tarefa = "escolher os melhores momentos" if not cortes else f"escolher mais {falta} cortes"
         dados = perguntar_ia(sistema, conteudo, op, log, SCHEMA_CORTES, FORMATO_CORTES, tarefa)
+        if not dados["cortes"]:  # a IA não achou mais nenhum momento bom: pedir de novo não adianta
+            break
         for c in dados["cortes"]:
             if len(cortes) >= alvo:
                 break
@@ -742,8 +769,9 @@ def escolher_cortes(segmentos: list[dict], op: Opcoes, log: Log, picos: list[dic
             if novo:
                 cortes.append(novo)
     if exatos and len(cortes) < alvo:
-        log(f"⚠ Pediu {alvo} cortes, mas só {len(cortes)} trechos deste vídeo passaram nas regras "
-            f"(duração mínima de {minimo:.0f}s, sem sobrepor). Vídeo curto ou com pouca fala?")
+        log(f"⚠ Pediu {alvo} cortes, mas este vídeo só tem {len(cortes)} momentos bons o bastante (com algo "
+            f"acontecendo de verdade, nota {NOTA_MIN_CORTE}+, sem repetir). Para não encher com corte fraco, "
+            f"saem {len(cortes)}.")
     log(f"A IA escolheu {len(cortes)} cortes.")
     for i, c in enumerate(cortes, 1):
         log(f"  {i}. [{_fmt(c.inicio)} → {_fmt(c.fim)}] nota {c.nota} — {c.titulo}")
@@ -1322,7 +1350,8 @@ def cortar_video(video: Path, pasta: Path, op: Opcoes, log: Log, prefixo: str = 
              "fala": " ".join(w.texto for w in c.palavras)[:2000], "duracao": round(duracao, 1),
              "nota": c.nota, "origem": video.name, "video": str(video.resolve()),
              "inicio": round(c.inicio, 2), "fim": round(c.fim, 2),
-             "pico": round(c.pico, 2) if c.pico is not None else None, "gancho": c.gancho}
+             "pico": round(c.pico, 2) if c.pico is not None else None, "gancho": c.gancho,
+             "acontece": c.acontece}
         if link:
             r["link"] = link  # para refazer o corte na revisão, baixando o trecho de novo
         if op.publicar_youtube and op.revisar_antes:

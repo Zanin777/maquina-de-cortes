@@ -22,8 +22,9 @@ Para quem prefere rodar o código em vez do .exe (para gerar o .exe: `gerar_exe.
 2. Escolha como usar a IA (veja abaixo).
 3. A janela tem duas áreas:
    - **Vídeo** (vídeo já gravado): cole o link ou clique em **Escolher arquivo...**, escolha a quantidade de
-     cortes e clique em **Fazer cortes**. A IA analisa o vídeo inteiro e entrega **exatamente** essa quantidade
-     (se o vídeo for curto ou com pouca fala para isso, o registro avisa). O link não é baixado inteiro.
+     cortes e clique em **Fazer cortes**. A IA analisa o vídeo inteiro e busca essa quantidade, só com momentos em que
+     **acontece alguma coisa** (o streamer só falando/opinando não vira corte). Se o vídeo não tiver tantos
+     momentos bons, saem menos e o registro avisa. O link não é baixado inteiro.
    - **Live** (live acontecendo agora): cole o link da live e clique em **Iniciar live** (veja "Live ao vivo").
 
 ## IA: assinatura Pro ou chave de API
