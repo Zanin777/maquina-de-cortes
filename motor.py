@@ -894,14 +894,12 @@ def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: i
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-    # o que vai no topo: o gancho nos primeiros segundos, depois o título
+    # faixa do topo só nos primeiros segundos, com o gancho (ou o título, se não houver gancho): parada o
+    # vídeo inteiro ela só repetia o título do post e tirava espaço do jogo
     topo: list[tuple[str, float, float]] = []
-    if op.titulo:
-        troca = min(DUR_GANCHO, dur) if corte.gancho else 0.0
-        if corte.gancho:
-            topo.append((corte.gancho, 0.0, troca))
-        if corte.titulo and dur - troca > 0.3:
-            topo.append((corte.titulo, troca, dur))
+    texto_topo = corte.gancho or corte.titulo
+    if op.titulo and texto_topo:
+        topo.append((texto_topo, 0.0, min(DUR_GANCHO, dur)))
     for texto, de, ate in topo:
         if titulo_vermelho:
             linhas += _faixa_vermelha(texto, largura, margem_tit, ate, de)
@@ -951,12 +949,12 @@ def _caixa_na_proporcao(cx: float, cy: float, w: float, h: float, prop: float,
 
 
 def _regiao_webcam(video: Path, corte: Corte, op: Opcoes, vw: int, vh: int, log: Log):
-    """Retorna a caixa (w,h,x,y) da webcam recortada e a faixa X (x0,x1) que a webcam ocupa no quadro."""
+    """Retorna a caixa (w,h,x,y) da webcam recortada e a área (x0,y0,x1,y1) que a webcam ocupa no quadro."""
     prop = 1080 / CAM_H
     if op.cam_regiao:
         rx, ry, rw, rh = op.cam_regiao
         x0, y0, w, h = rx * vw, ry * vh, rw * vw, rh * vh
-        return _caixa_na_proporcao(x0 + w / 2, y0 + h / 2, w, h, prop, vw, vh), (x0, x0 + w)
+        return _caixa_na_proporcao(x0 + w / 2, y0 + h / 2, w, h, prop, vw, vh), (x0, y0, x0 + w, y0 + h)
     rosto = detectar_rosto(video, corte.inicio, corte.fim)
     if not rosto:
         log("    (não achei a webcam, usando o layout normal)")
@@ -964,17 +962,21 @@ def _regiao_webcam(video: Path, corte: Corte, op: Opcoes, vw: int, vh: int, log:
     cx, cy, fw = rosto
     largura = fw * 1.8  # só o rosto: apertado para não pegar a borda da webcam nem alertas
     caixa = _caixa_na_proporcao(cx, cy + fw * 0.05, largura, largura / prop, prop, vw, vh)
-    return caixa, (cx - fw * 2.2, cx + fw * 2.2)  # faixa aproximada da webcam inteira
+    # área aproximada da webcam inteira (o rosto costuma ocupar 1/4 da largura dela)
+    return caixa, (cx - fw * 2.2, cy - fw * 1.8, cx + fw * 2.2, cy + fw * 2.2)
 
 
-def _x_do_jogo(gw: int, vw: int, faixa_cam: tuple[float, float]) -> int:
-    """Escolhe o recorte do jogo que mostra o mínimo possível da webcam (empate: o do meio)."""
-    candidatos = [(vw - gw) // 2, 0, vw - gw]
+def _x_do_jogo(gw: int, vw: int, cam: tuple[float, float, float, float]) -> int:
+    """Escolhe o recorte do jogo (largura gw, altura toda) que mostra o mínimo possível da webcam;
+    entre os que empatam, o mais perto do centro."""
+    meio = (vw - gw) // 2
+    passo = max(1, (vw - gw) // 20)
+    candidatos = sorted({*range(0, vw - gw + 1, passo), vw - gw, meio}, key=lambda x: abs(x - meio))
 
     def sobra(x):
-        return max(0.0, min(x + gw, faixa_cam[1]) - max(x, faixa_cam[0]))
+        return max(0.0, min(x + gw, cam[2]) - max(x, cam[0]))
 
-    return min(candidatos, key=lambda x: (round(sobra(x)), candidatos.index(x)))
+    return min(candidatos, key=lambda x: round(sobra(x) / 10))
 
 
 def _tem_audio(video: Path) -> bool:
@@ -1026,25 +1028,29 @@ def renderizar(video: Path, corte: Corte, destino: Path, op: Opcoes, log: Log) -
     filtros = []
 
     if op.vertical and op.layout == "streamer" and vw > vh:
-        cam, faixa = _regiao_webcam(video, corte, op, vw, vh, log)
+        cam, area_cam = _regiao_webcam(video, corte, op, vw, vh, log)
         if cam:
             W, H = 1080, CAM_H + GAME_H
             cw, ch, cx, cy = cam
-            # jogo inteiro (16:9, sem cortar nada), centralizado logo abaixo da faixa do título,
-            # em cima de um fundo desfocado do próprio jogo
-            jogo_h = _par(1080 * vh / vw)
-            textos = [t for t in (corte.gancho, corte.titulo) if t] if op.titulo else []
-            faixa_h = max((_altura_faixa(t) for t in textos), default=0)
-            gy = faixa_h if faixa_h else (GAME_H - jogo_h) // 2
+            # rosto em cima (40% da tela) e jogo preenchendo a parte de baixo (60%). O recorte do jogo
+            # foge da webcam da live, para o rosto não aparecer duas vezes; o que sobrar dela é desfocado.
+            gw = min(vw, _par(vh * 1080 / GAME_H))
+            gx = _x_do_jogo(gw, vw, area_cam)
+            bx0, by0 = max(area_cam[0], gx), max(area_cam[1], 0)
+            bx1, by1 = min(area_cam[2], gx + gw), min(area_cam[3], vh)
+            tampa = ""
+            if bx1 - bx0 > 8 and by1 - by0 > 8:
+                bw, bh = _par(bx1 - bx0), _par(by1 - by0)
+                bx, by = int(bx0 - gx), int(by0)
+                tampa = (f"split[g1][g2];[g2]crop={bw}:{bh}:{bx}:{by},boxblur=30:3[tampa];"
+                         f"[g1][tampa]overlay={bx}:{by},")
+                log("    (a webcam da live ficou dentro do recorte do jogo: desfocada)")
             cam_zoom = ",".join(com_zoom(1080, CAM_H)) + "," if op.zoom else ""
-            grafo = (f"[vin]split=3[a][b][c];"
+            grafo = (f"[vin]split=2[a][c];"
                      f"[a]crop={cw}:{ch}:{cx}:{cy},scale=1080:{CAM_H},{cam_zoom}setsar=1[cam];"
-                     f"[b]scale=1080:{GAME_H}:force_original_aspect_ratio=increase,crop=1080:{GAME_H},"
-                     f"boxblur=25:2,eq=brightness=-0.12,setsar=1[fundo];"
-                     f"[c]scale=1080:{jogo_h},setsar=1[jogo];"
-                     f"[fundo][jogo]overlay=0:{gy}[baixo];"
+                     f"[c]crop={gw}:{vh}:{gx}:0,{tampa}scale=1080:{GAME_H},setsar=1[baixo];"
                      f"[cam][baixo]vstack=inputs=2")
-            margem_tit = CAM_H  # faixa do título encostada embaixo da webcam
+            margem_tit = CAM_H  # faixa do gancho encostada embaixo da webcam
             margem_leg = int(H * ALTURA_LEGENDA)  # legenda por cima do jogo, um pouco abaixo do meio
 
     if grafo is None:

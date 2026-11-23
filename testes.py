@@ -80,14 +80,26 @@ def teste_gancho_no_comeco():
                     gancho="espera o que acontece")
     linhas = motor.gerar_ass(c, 1080, 1920, motor.Opcoes(), 768, titulo_vermelho=True).splitlines()
     gancho = [l for l in linhas if "ESPERA O QUE ACONTECE" in l]
-    titulo = [l for l in linhas if "TÍTULO DO CORTE" in l]
     assert len(gancho) == 1 and gancho[0].split(",")[1:3] == ["0:00:00.00", "0:00:02.50"], gancho
-    assert len(titulo) == 1 and titulo[0].split(",")[1:3] == ["0:00:02.50", "0:00:20.00"], titulo
-    # sem gancho: o título fica o corte inteiro, como antes
+    assert not [l for l in linhas if "TÍTULO DO CORTE" in l]  # a faixa não fica parada repetindo o título
+    assert all(l.split(",")[2] <= "0:00:02.50" for l in linhas if "Desenho" in l and l.startswith("Dialogue"))
+    # sem gancho: o título aparece só no começo
     c.gancho = ""
     linhas = motor.gerar_ass(c, 1080, 1920, motor.Opcoes(), 768, titulo_vermelho=True).splitlines()
     titulo = [l for l in linhas if "TÍTULO DO CORTE" in l]
-    assert titulo[0].split(",")[1:3] == ["0:00:00.00", "0:00:20.00"], titulo
+    assert titulo[0].split(",")[1:3] == ["0:00:00.00", "0:00:02.50"], titulo
+
+
+def teste_jogo_foge_da_webcam():
+    # quadro 1920 de largura, recorte do jogo de 1012: webcam no canto esquerdo -> recorte vai pra direita
+    # (tolerância de até 10 px de webcam na borda do recorte)
+    x = motor._x_do_jogo(1012, 1920, (0, 0, 500, 400))
+    assert x >= 490, x
+    # webcam no canto direito -> recorte vai pra esquerda
+    x = motor._x_do_jogo(1012, 1920, (1500, 600, 1920, 1080))
+    assert x + 1012 <= 1510, x
+    # webcam longe do meio -> fica no meio
+    assert motor._x_do_jogo(1012, 1920, (0, 0, 200, 200)) == (1920 - 1012) // 2
 
 
 def teste_publicar_respeita_revisao():

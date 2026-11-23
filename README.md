@@ -39,9 +39,10 @@ Para quem prefere rodar o código em vez do .exe (para gerar o .exe: `gerar_exe.
 
 ## Layout streamer (padrão)
 Para lives de jogo, cada corte sai assim:
-- **em cima:** só o rosto do streamer, recortado da webcam e centralizado;
-- **no meio:** o título numa faixa vermelha;
-- **embaixo:** o jogo inteiro (sem cortar nada), com fundo desfocado e a legenda no espaço que sobra.
+- **em cima (40% da tela):** só o rosto do streamer, recortado da webcam e centralizado;
+- **embaixo (60%):** o jogo preenchendo tudo, recortado para deixar de fora a webcam da live (o rosto não
+  aparece duas vezes; se ela ficar dentro do recorte, aquele pedaço é desfocado), com a legenda por cima;
+- **nos primeiros 2,5 s:** o gancho (a pergunta do começo) numa faixa vermelha entre os dois, que depois some.
 
 O rosto é achado sozinho. Se o recorte não ficar bom, clique em **Marcar webcam...**, arraste um
 retângulo em volta do rosto e salve — fica guardado para as próximas lives (o botão **Automática** desfaz).
