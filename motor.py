@@ -787,6 +787,7 @@ def _ass_esc(txt: str) -> str:
 
 
 TAM_FAIXA = 62  # tamanho da letra do título na faixa vermelha
+FONTE_FAIXA = "Segoe UI Black"  # fonte da faixa vermelha (vem no Windows)
 # vídeo vertical: distância da base da legenda até o pé do vídeo, em fração da altura
 # (0.40 = a legenda fica um pouco abaixo do meio; aumente para subir, diminua para descer)
 ALTURA_LEGENDA = 0.40
@@ -829,7 +830,7 @@ def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float, de: float = 
 
     def ret(y, h, cor_bgr, camada, extra=""):
         return (f"Dialogue: {camada},{ini},{fim},Desenho,,0,0,0,,"
-                f"{{\\an7\\pos(0,{y})\\1c&H{cor_bgr}&\\fad(150,0){extra}\\p1}}"
+                f"{{\\an7\\pos(0,{y})\\1c&H{cor_bgr}&{extra}\\p1}}"
                 f"m 0 0 l {largura} 0 l {largura} {h} l 0 {h}{{\\p0}}")
 
     texto = "\\N".join(_ass_esc(l) for l in linhas_tit)
@@ -837,8 +838,6 @@ def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float, de: float = 
     # listras diagonais sutis (textura) por toda a faixa
     listras = " ".join(f"m {x} 0 l {x + 26} 0 l {x + 26 - alt} {alt} l {x - alt} {alt}"
                        for x in range(0, largura + alt, 64))
-    # brilho que atravessa a faixa logo que ela aparece
-    brilho = f"m 0 0 l 90 0 l {90 - alt} {alt} l {-alt} {alt}"
     # cantos amarelos (triângulos) nas pontas de baixo
     canto = 34
     return [
@@ -846,20 +845,17 @@ def _faixa_vermelha(titulo: str, largura: int, y0: int, dur: float, de: float = 
         ret(y0, alt, "1C1CD9", 3),                 # faixa vermelha
         ret(y0 + alt // 2, alt - alt // 2, "1212B4", 3, "\\1a&H70&"),  # metade de baixo mais escura (degradê)
         f"Dialogue: 3,{ini},{fim},Desenho,,0,0,0,,"
-        f"{{\\an7\\pos(0,{y0})\\1c&H0E0EA0&\\1a&HB4&\\fad(150,0){clip}\\p1}}{listras}{{\\p0}}",
+        f"{{\\an7\\pos(0,{y0})\\1c&H0E0EA0&\\1a&HB4&{clip}\\p1}}{listras}{{\\p0}}",
         ret(y0, 8, "00D2FF", 4),                   # detalhe amarelo em cima
         ret(y0 + 8, 3, "FFFFFF", 4, "\\1a&H60&"),  # filete branco embaixo do amarelo
         ret(y0 + alt - 4, 4, "0E0E9A", 4),         # filete escuro na base
         f"Dialogue: 4,{ini},{fim},Desenho,,0,0,0,,"
-        f"{{\\an7\\pos(0,{y0 + alt - canto})\\1c&H00D2FF&\\fad(150,0)\\p1}}m 0 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
+        f"{{\\an7\\pos(0,{y0 + alt - canto})\\1c&H00D2FF&\\p1}}m 0 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
         f"Dialogue: 4,{ini},{fim},Desenho,,0,0,0,,"
-        f"{{\\an7\\pos({largura - canto},{y0 + alt - canto})\\1c&H00D2FF&\\fad(150,0)\\p1}}"
+        f"{{\\an7\\pos({largura - canto},{y0 + alt - canto})\\1c&H00D2FF&\\p1}}"
         f"m {canto} 0 l {canto} {canto} l 0 {canto}{{\\p0}}",
-        f"Dialogue: 4,{ini},{_ass_tempo(min(dur, de + 1.2))},Desenho,,0,0,0,,"
-        f"{{\\an7\\move({-120},{y0},{largura + alt},{y0},250,900)\\1c&HFFFFFF&\\1a&H90&{clip}\\p1}}{brilho}{{\\p0}}",
         f"Dialogue: 5,{ini},{fim},TitV,,0,0,0,,"
-        f"{{\\an5\\pos({largura // 2},{y0 + alt // 2 + 3})\\fad(150,0)\\3c&H00006E&\\4c&H00005A&\\shad5"
-        f"\\fscx80\\fscy80\\t(0,220,\\fscx100\\fscy100)}}{texto}",
+        f"{{\\an5\\pos({largura // 2},{y0 + alt // 2 + 3})\\3c&H00006E&\\4c&H00005A&\\shad5}}{texto}",
     ]
 
 
@@ -895,7 +891,7 @@ def gerar_ass(corte: Corte, largura: int, altura: int, op: Opcoes, margem_tit: i
         f"-1,0,0,0,100,100,0,0,1,{max(4, tam_leg // 12)},2,2,60,60,{margem_leg},1",
         f"Style: Tit,Arial,{tam_tit},{cor_texto},{cor_texto},{cor_caixa},{cor_caixa},"
         f"-1,0,0,0,100,100,0,0,3,{max(10, tam_tit // 4)},0,8,90,90,{margem_tit},1",
-        f"Style: TitV,Arial Black,{TAM_FAIXA},&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,"
+        f"Style: TitV,{FONTE_FAIXA},{TAM_FAIXA},&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,"
         "-1,0,0,0,100,100,0,0,1,4,3,5,40,40,0,1",
         "Style: Desenho,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
         "0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
